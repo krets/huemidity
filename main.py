@@ -130,17 +130,15 @@ def setup_windows_tray():
         print(f"[Windows Tray] Could not load icon image: {e}. Generating fallback...")
         image = Image.new('RGB', (64, 64), color=(0, 240, 255))
         
-    def on_show_clicked(icon, item):
+    def on_toggle_clicked(icon, item):
         global window_visible
         if main_window:
-            main_window.show()
-            window_visible = True
-            
-    def on_hide_clicked(icon, item):
-        global window_visible
-        if main_window:
-            main_window.hide()
-            window_visible = False
+            if window_visible:
+                main_window.hide()
+                window_visible = False
+            else:
+                main_window.show()
+                window_visible = True
             
     def on_quit_clicked(icon, item):
         icon.stop()
@@ -151,8 +149,10 @@ def setup_windows_tray():
         "HueMIDI", 
         image, 
         menu=pystray.Menu(
-            pystray.MenuItem("Show Dashboard", on_show_clicked),
-            pystray.MenuItem("Hide Dashboard", on_hide_clicked),
+            pystray.MenuItem(
+                lambda item: "Hide Dashboard" if window_visible else "Show Dashboard", 
+                on_toggle_clicked
+            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit_clicked)
         )
@@ -219,8 +219,8 @@ class WebviewApi:
     def get_mappings(self):
         return self.cfg.get_mappings(self.midi.selected_device)
 
-    def add_mapping(self, event_key, target_type, target_id, action):
-        self.cfg.add_mapping(self.midi.selected_device, event_key, target_type, target_id, action)
+    def add_mapping(self, event_key, target_type, target_id, action, invert=False, auto_on=False):
+        self.cfg.add_mapping(self.midi.selected_device, event_key, target_type, target_id, action, invert, auto_on)
         return True
 
     def remove_mapping(self, event_key):
@@ -238,6 +238,14 @@ class WebviewApi:
 
     def save_dashboard_layout(self, layout):
         self.cfg.set_dashboard_layout(layout)
+        return True
+
+    def get_config_path(self):
+        return self.cfg.config_path
+
+    def quit_application(self):
+        print("[API] Quit application requested via UI.")
+        threading.Thread(target=cleanup_and_exit, daemon=True).start()
         return True
 
 # 6. Main Runner

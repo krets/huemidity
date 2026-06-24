@@ -12,15 +12,15 @@ from midi import MidiManager
 
 class TestHueMidi(unittest.TestCase):
     def setUp(self):
-        # Create a clean config.json for testing
+        # Create a clean test_config.json for testing
         self.test_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(self.test_dir, "config.json")
+        self.config_path = os.path.join(self.test_dir, "test_config.json")
         if os.path.exists(self.config_path):
             os.remove(self.config_path)
-        self.config = ConfigManager()
+        self.config = ConfigManager(config_file="test_config.json")
 
     def tearDown(self):
-        # Clean up test config.json
+        # Clean up test_config.json
         if os.path.exists(self.config_path):
             os.remove(self.config_path)
 
@@ -57,25 +57,40 @@ class TestHueMidi(unittest.TestCase):
         
         # Process midi message for CC 14 with MIDI value 127 (Max Brightness)
         midi_mgr._process_mapping("CC 14", 127)
-        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 254)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 254, auto_on=False)
         
         # Process midi message for CC 14 with MIDI value 0 (Min Brightness)
         midi_mgr._process_mapping("CC 14", 0)
-        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 0)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 0, auto_on=False)
 
         # Process midi message for Note 60 with MIDI value 100 (Note On triggers toggle)
         midi_mgr._process_mapping("Note 60", 100)
-        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off", "toggle")
+        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off", "toggle", auto_on=False)
 
         # Test momentary toggle mappings
         self.config.add_mapping("TestController", "CC 15", "light", "2", "Toggle On/Off (Momentary)")
         hue_mock.reset_mock()
         midi_mgr._process_mapping("CC 15", 127) # Press -> toggle
-        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off (Momentary)", "toggle")
+        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off (Momentary)", "toggle", auto_on=False)
         
         hue_mock.reset_mock()
         midi_mgr._process_mapping("CC 15", 0) # Release -> ignored
         hue_mock.set_state.assert_not_called()
+
+        # Test invert mapping (0 becomes 127, 127 becomes 0)
+        self.config.add_mapping("TestController", "CC 17", "light", "1", "Brightness", invert=True)
+        hue_mock.reset_mock()
+        midi_mgr._process_mapping("CC 17", 127)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 0, auto_on=False)
+        
+        midi_mgr._process_mapping("CC 17", 0)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 254, auto_on=False)
+
+        # Test auto_on mapping
+        self.config.add_mapping("TestController", "CC 18", "light", "1", "Brightness", auto_on=True)
+        hue_mock.reset_mock()
+        midi_mgr._process_mapping("CC 18", 127)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 254, auto_on=True)
         
         # Test scene mappings
         self.config.add_mapping("TestController", "CC 16", "scene", "5/abc123xyz", "Recall Scene")

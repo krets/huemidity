@@ -34,7 +34,7 @@ class MidiManager:
         with self.cache_lock:
             # Remove previous occurrences of this event key to move it to the top
             self.learn_cache = [e for e in self.learn_cache if e['key'] != event_key]
-            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            timestamp = time.strftime('%H:%M:%S')
             self.learn_cache.insert(0, {'key': event_key, 'value': value, 'time': timestamp})
             self.learn_cache = self.learn_cache[:10]
 
@@ -163,6 +163,11 @@ class MidiManager:
             return
             
         mapping = mappings[event_key]
+        
+        # Invert MIDI input value (0-127) if configured
+        if mapping.get('invert', False):
+            value = 127 - value
+            
         target_type = mapping.get('target_type')
         target_id = mapping.get('target_id')
         if target_type == 'scene':
@@ -213,4 +218,5 @@ class MidiManager:
             hue_value = int(value * (254.0 / 127.0))
             
         if hue_value is not None:
-            self.hue_manager.set_state(target_type, target_id, action, hue_value)
+            auto_on = mapping.get('auto_on', False)
+            self.hue_manager.set_state(target_type, target_id, action, hue_value, auto_on=auto_on)

@@ -107,8 +107,9 @@ body {
     left: 0;
     width: 100vw;
     height: 100vh;
-    background: rgba(5, 4, 10, 0.85);
-    backdrop-filter: blur(20px);
+    background: rgba(5, 4, 10, 0.5);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     display: flex;
     justify-content: center;
     align-items: center;
@@ -840,11 +841,11 @@ input[type="color"] {
     background: rgba(5, 4, 10, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 8px;
-    padding: 15px;
+    padding: 12px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 3px;
     margin-top: 10px;
 }
 
@@ -854,7 +855,7 @@ input[type="color"] {
     align-items: center;
     font-family: 'Courier New', Courier, monospace;
     font-size: 0.85rem;
-    padding: 6px 0;
+    padding: 3px 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.02);
 }
 
@@ -874,7 +875,7 @@ input[type="color"] {
 .terminal-line .event-key {
     color: var(--neon-cyan);
     text-shadow: 0 0 5px rgba(0, 240, 255, 0.2);
-    width: 95px;
+    width: 70px;
     flex-shrink: 0;
 }
 
@@ -961,14 +962,19 @@ input[type="color"] {
 .mappings-table th {
     font-weight: 500;
     color: var(--text-muted);
-    padding: 10px 15px;
+    padding: 10px 6px;
     border-bottom: 1px solid var(--card-border);
 }
 
 .mappings-table td {
-    padding: 12px 15px;
+    padding: 8px 6px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.02);
     vertical-align: middle;
+}
+
+.mappings-table td.text-right {
+    text-align: right;
+    white-space: nowrap;
 }
 
 .mappings-table tr:last-child td {
@@ -1077,3 +1083,111 @@ input[type="color"] {
     border-top: 1px solid var(--card-border);
     padding-top: 15px;
 }
+
+/* Clickable Status Badge Refresh Styles */
+.clickable-refresh {
+    cursor: pointer;
+    transition: transform var(--transition-fast), filter var(--transition-fast);
+}
+
+.clickable-refresh:hover {
+    transform: scale(1.02);
+    filter: brightness(1.15);
+}
+
+.clickable-refresh:active {
+    transform: scale(0.97);
+}
+
+/* Minimal Floating Add Widget Button */
+.floating-add-btn {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    color: var(--text-secondary);
+    font-size: 2rem;
+    font-family: inherit;
+    font-weight: 300;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    line-height: 1;
+    z-index: 99;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.floating-add-btn:hover {
+    background: rgba(0, 240, 255, 0.08);
+    border-color: rgba(0, 240, 255, 0.3);
+    color: var(--neon-cyan);
+    box-shadow: var(--shadow-neon-cyan);
+    transform: scale(1.05);
+}
+
+.floating-add-btn:active {
+    transform: scale(0.95);
+}
+
+/* Settings Gear Button */
+.icon-btn-settings {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.icon-btn-settings:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+    color: white;
+}
+
+/* Settings Modal Elements */
+.setting-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.setting-label {
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+.setting-val {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+
+.setting-val.text-green {
+    color: var(--neon-green);
+    text-shadow: 0 0 8px rgba(57, 255, 20, 0.2);
+}
+
+/* Option Styles for Theme consistency */
+select option {
+    background-color: #120e24;
+    color: white;
+    font-family: inherit;
+}
+

@@ -32,6 +32,12 @@ function initApp() {
 
     // 2. Start connection polling loop
     startConnectionPolling();
+
+    // 3. Register Mapping action change listener
+    const actionSel = document.getElementById('mapping-action');
+    if (actionSel) {
+        actionSel.addEventListener('change', updateMappingAutoOnVisibility);
+    }
 }
 
 /* Onboarding & Connection Handling */
@@ -94,10 +100,10 @@ function showManualIpForm() {
     updateOnboardingUI('idle');
 }
 
-function submitManualIp() {
+async function submitManualIp() {
     const ip = document.getElementById('manual-ip-input').value.trim();
     if (!ip) {
-        alert("Please enter a valid IP address.");
+        await showCustomAlert("Please enter a valid IP address.", "Invalid IP");
         return;
     }
     
@@ -114,8 +120,10 @@ function restartDiscovery() {
     });
 }
 
-function disconnectBridge() {
-    if (confirm("Disconnect from Hue Bridge and log out?")) {
+async function disconnectBridge() {
+    const approved = await showCustomConfirm("Disconnect from Hue Bridge and log out?", "Disconnect Bridge");
+    if (approved) {
+        closeSettingsModal();
         if (deviceUpdateInterval) clearInterval(deviceUpdateInterval);
         if (midiStatusInterval) clearInterval(midiStatusInterval);
         
@@ -135,8 +143,14 @@ function switchTab(tabName) {
     document.getElementById('tab-content-lights').classList.toggle('active', tabName === 'lights');
     document.getElementById('tab-content-midi').classList.toggle('active', tabName === 'midi');
     
+    const floatingBtn = document.getElementById('floating-add-btn');
+    if (floatingBtn) {
+        floatingBtn.classList.toggle('hidden', tabName !== 'lights');
+    }
+    
     if (tabName === 'midi') {
         refreshMidiStatus();
+        renderMappings();
         if (midiStatusInterval) clearInterval(midiStatusInterval);
         midiStatusInterval = setInterval(refreshMidiStatus, 3000);
     } else {
@@ -149,18 +163,13 @@ function switchTab(tabName) {
 
 /* Dashboard Loading & Refreshing */
 function loadDashboardData() {
-    // 1. Get Bridge IP for Header
-    window.pywebview.api.get_bridge_ip().then(ip => {
-        document.getElementById('header-ip').innerText = ip;
-    });
-
-    // 2. Fetch layout and devices
+    // 1. Fetch layout and devices
     window.pywebview.api.get_dashboard_layout().then(layout => {
         dashboardLayout = layout || [];
         refreshDevices();
     });
 
-    // 3. Populate MIDI configuration
+    // 2. Populate MIDI configuration
     populateMidiConfig();
 }
 
@@ -172,6 +181,7 @@ function refreshDevices() {
         groupsList = data.groups || [];
         scenesList = data.scenes || [];
         renderDashboardWidgets();
+        renderMappings();
     });
 }
 
@@ -217,12 +227,81 @@ function renderDashboardWidgets() {
     });
     
     setupDragAndDropEvents();
+    setupDashboardCardInteractions();
+}
+
+function setupDashboardCardInteractions() {
+    const cards = document.querySelectorAll('.dashboard-widgets-grid .device-card');
+    cards.forEach(card => {
+        const index = parseInt(card.getAttribute('data-index'));
+        const item = dashboardLayout[index];
+        if (!item) return;
+
+        // 1. Wheel/Scroll listener for brightness adjustment
+        card.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            
+            let device = null;
+            if (item.type === 'light') {
+                device = lightsList.find(l => l.id == item.id);
+            } else {
+                device = groupsList.find(g => g.id == item.id);
+            }
+            if (!device || device.missing) return;
+
+            const briSlider = document.getElementById(`${item.type}-${device.id}-bri`);
+            if (!briSlider) return;
+
+            let currentBri = parseInt(briSlider.value);
+            const step = 15;
+            if (e.deltaY < 0) {
+                currentBri = Math.min(254, currentBri + step);
+            } else {
+                currentBri = Math.max(0, currentBri - step);
+            }
+
+            briSlider.value = currentBri;
+            
+            // Auto toggle ON if turned off and scrolling up
+            const toggle = document.getElementById(`${item.type}-${device.id}-toggle`);
+            if (toggle && !toggle.checked && e.deltaY < 0) {
+                toggle.checked = true;
+                onDeviceToggle(item.type, device.id, true);
+            }
+
+            onDeviceBrightnessInput(item.type, device.id, currentBri);
+        }, { passive: false });
+
+        // 2. Double-click listener to toggle power state
+        card.addEventListener('dblclick', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.classList.contains('drag-handle') || e.target.closest('.color-picker-control')) {
+                return;
+            }
+            
+            let device = null;
+            if (item.type === 'light') {
+                device = lightsList.find(l => l.id == item.id);
+            } else {
+                device = groupsList.find(g => g.id == item.id);
+            }
+            if (!device || device.missing) return;
+
+            const toggle = document.getElementById(`${item.type}-${device.id}-toggle`);
+            if (toggle) {
+                const newChecked = !toggle.checked;
+                toggle.checked = newChecked;
+                onDeviceToggle(item.type, device.id, newChecked);
+            }
+        });
+    });
 }
 
 function createDeviceCard(device, type, index) {
     const isOn = device.on;
     const hexColor = hueSatToHex(device.hue, device.sat);
     const isMissing = device.missing;
+    const hasDim = device.capabilities && device.capabilities.includes('dim');
+    const hasColor = device.capabilities && device.capabilities.includes('color');
     
     return `
         <div id="card-${index}" class="device-card ${isOn ? 'on' : ''}" draggable="true" data-index="${index}">
@@ -243,19 +322,23 @@ function createDeviceCard(device, type, index) {
                 </div>
             </div>
             
-            ${!isMissing ? `
+            ${!isMissing && (hasDim || hasColor) ? `
             <div class="device-controls-row">
+                ${hasDim ? `
                 <div class="slider-control">
                     <label>Bri</label>
                     <input type="range" id="${type}-${device.id}-bri" min="0" max="254" value="${device.bri}" 
                            oninput="onDeviceBrightnessInput('${type}', '${device.id}', this.value)">
                 </div>
+                ` : ''}
+                ${hasColor ? `
                 <div class="color-picker-control">
                     <div class="color-picker-wrapper" style="background-color: ${hexColor}" id="${type}-${device.id}-color-preview">
                         <input type="color" id="${type}-${device.id}-color" value="${hexColor}" 
                                oninput="onDeviceColorInput('${type}', '${device.id}', this.value)">
                     </div>
                 </div>
+                ` : ''}
             </div>
             ` : ''}
         </div>
@@ -437,8 +520,9 @@ function submitAddWidgets() {
     });
 }
 
-function removeWidget(index) {
-    if (confirm("Remove this widget control from dashboard layout?")) {
+async function removeWidget(index) {
+    const approved = await showCustomConfirm("Remove this widget control from dashboard layout?", "Remove Widget");
+    if (approved) {
         dashboardLayout.splice(index, 1);
         window.pywebview.api.save_dashboard_layout(dashboardLayout).then(() => {
             renderDashboardWidgets();
@@ -587,6 +671,10 @@ function openMappingCreator(midiKey, editingMapping = null) {
         // Populate actions list based on capabilities first, then set value
         onMappingTargetChanged();
         document.getElementById('mapping-action').value = editingMapping.action;
+        
+        // Load checkbox states
+        document.getElementById('mapping-invert').checked = editingMapping.invert || false;
+        document.getElementById('mapping-auto-on').checked = editingMapping.auto_on || false;
     } else {
         title.innerHTML = `Create Mapping for <span id="creator-midi-key" class="neon-text">${midiKey}</span>`;
         saveBtn.innerText = "Save Mapping Bind";
@@ -594,7 +682,12 @@ function openMappingCreator(midiKey, editingMapping = null) {
         document.getElementById('mapping-target-type').value = 'light';
         populateTargetDropdown();
         onMappingTargetChanged();
+        
+        // Reset checkboxes
+        document.getElementById('mapping-invert').checked = false;
+        document.getElementById('mapping-auto-on').checked = false;
     }
+    updateMappingAutoOnVisibility();
 }
 
 function closeMappingCreator() {
@@ -609,17 +702,19 @@ function populateTargetDropdown() {
     
     if (targetType === 'light') {
         lightsList.forEach(light => {
-            selectTargetId.innerHTML += `<option value="${light.id}">${light.name} (Light ${light.id})</option>`;
+            const deviceType = light.type || 'Light';
+            selectTargetId.innerHTML += `<option value="${light.id}">${light.name} (${light.id}: ${deviceType})</option>`;
         });
     } else if (targetType === 'group') {
         groupsList.forEach(group => {
-            selectTargetId.innerHTML += `<option value="${group.id}">${group.name} (Group ${group.id})</option>`;
+            const deviceType = group.type || 'Group';
+            selectTargetId.innerHTML += `<option value="${group.id}">${group.name} (${group.id}: ${deviceType})</option>`;
         });
     } else if (targetType === 'scene') {
         scenesList.forEach(scene => {
             const groupObj = groupsList.find(g => g.id == scene.group_id);
             const groupName = groupObj ? groupObj.name : `Group ${scene.group_id}`;
-            selectTargetId.innerHTML += `<option value="${scene.group_id}/${scene.id}">${scene.name} (${groupName})</option>`;
+            selectTargetId.innerHTML += `<option value="${scene.group_id}/${scene.id}">${scene.name} (${scene.id}: Scene in ${groupName})</option>`;
         });
     }
 }
@@ -634,18 +729,18 @@ function onMappingTargetChanged() {
     
     if (targetType === 'scene') {
         actionSelect.innerHTML = '<option value="Recall Scene">Recall Scene</option>';
+        updateMappingAutoOnVisibility();
         return;
     }
     
     // Core actions (all lights & groups support this)
     let actions = [
         { val: 'Toggle On/Off (Latch)', label: 'Toggle On/Off (Latch)' },
-        { val: 'Toggle On/Off (Momentary)', label: 'Toggle On/Off (Momentary)' },
-        { val: 'Brightness', label: 'Brightness' }
+        { val: 'Toggle On/Off (Momentary)', label: 'Toggle On/Off (Momentary)' }
     ];
     
     if (targetType === 'group') {
-        // Groups default to supporting color and ct by default
+        actions.push({ val: 'Brightness', label: 'Brightness' });
         actions.push({ val: 'Color Temperature', label: 'Color Temperature (CT)' });
         actions.push({ val: 'Hue', label: 'Hue' });
         actions.push({ val: 'Saturation', label: 'Saturation' });
@@ -655,6 +750,9 @@ function onMappingTargetChanged() {
     } else if (targetType === 'light') {
         const light = lightsList.find(l => l.id == targetId);
         if (light && light.capabilities) {
+            if (light.capabilities.includes('dim')) {
+                actions.push({ val: 'Brightness', label: 'Brightness' });
+            }
             if (light.capabilities.includes('ct')) {
                 actions.push({ val: 'Color Temperature', label: 'Color Temperature (CT)' });
             }
@@ -671,20 +769,23 @@ function onMappingTargetChanged() {
     actions.forEach(act => {
         actionSelect.innerHTML += `<option value="${act.val}">${act.label}</option>`;
     });
+    updateMappingAutoOnVisibility();
 }
 
-function submitMapping() {
+async function submitMapping() {
     const midiKey = document.getElementById('creator-midi-key').innerText;
     const targetType = document.getElementById('mapping-target-type').value;
     const targetId = document.getElementById('mapping-target-id').value;
     const action = document.getElementById('mapping-action').value;
+    const invert = document.getElementById('mapping-invert').checked;
+    const autoOn = document.getElementById('mapping-auto-on').checked;
     
     if (!targetId) {
-        alert("Please select a target device or scene.");
+        await showCustomAlert("Please select a target device or scene.", "Select Target");
         return;
     }
 
-    window.pywebview.api.add_mapping(midiKey, targetType, targetId, action).then(() => {
+    window.pywebview.api.add_mapping(midiKey, targetType, targetId, action, invert, autoOn).then(() => {
         closeMappingCreator();
         renderMappings();
     });
@@ -767,8 +868,9 @@ function editMapping(midiKey) {
     }
 }
 
-function deleteMapping(midiKey) {
-    if (confirm(`Remove mapping for ${midiKey}?`)) {
+async function deleteMapping(midiKey) {
+    const approved = await showCustomConfirm(`Remove mapping for ${midiKey}?`, "Remove Mapping");
+    if (approved) {
         window.pywebview.api.remove_mapping(midiKey).then(() => {
             renderMappings();
         });
@@ -834,4 +936,85 @@ function hueSatToHex(hue, sat) {
         return hex.length === 1 ? '0' + hex : hex;
     };
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+/* Settings Modal Management */
+function openSettingsModal() {
+    window.pywebview.api.get_bridge_ip().then(ip => {
+        document.getElementById('settings-bridge-ip').innerText = ip || "Unknown";
+    });
+    window.pywebview.api.get_config_path().then(path => {
+        document.getElementById('settings-config-path').innerText = path || "Unknown";
+    });
+    document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+function closeSettingsModal() {
+    document.getElementById('settings-modal').classList.add('hidden');
+}
+
+async function quitApp() {
+    const approved = await showCustomConfirm("Completely exit and close HueMIDI?", "Quit Application");
+    if (approved) {
+        window.pywebview.api.quit_application();
+    }
+}
+
+/* Auto-On visibility helper */
+function updateMappingAutoOnVisibility() {
+    const action = document.getElementById('mapping-action').value;
+    const wrapper = document.getElementById('mapping-auto-on-wrapper');
+    if (!wrapper) return;
+    
+    // Auto-On applies to value controls, NOT toggles or scene recall
+    const isValueControl = action === 'Brightness' || action === 'Color Temperature' || 
+                           action === 'Hue' || action === 'Saturation' || 
+                           action === 'Red' || action === 'Green' || action === 'Blue';
+    if (isValueControl) {
+        wrapper.classList.remove('hidden');
+    } else {
+        wrapper.classList.add('hidden');
+        document.getElementById('mapping-auto-on').checked = false;
+    }
+}
+
+/* Custom Alert/Confirm Modal Promisified Dialogs */
+let confirmResolve = null;
+
+function showCustomAlert(message, title = "Notification") {
+    document.getElementById('alert-title').innerText = title;
+    document.getElementById('alert-message').innerText = message;
+    document.getElementById('alert-btn-cancel').classList.add('hidden');
+    document.getElementById('alert-btn-ok').innerText = "OK";
+    
+    document.getElementById('custom-alert-modal').classList.remove('hidden');
+    
+    return new Promise(resolve => {
+        confirmResolve = () => {
+            document.getElementById('custom-alert-modal').classList.add('hidden');
+            resolve(true);
+        };
+    });
+}
+
+function showCustomConfirm(message, title = "Confirm Action") {
+    document.getElementById('alert-title').innerText = title;
+    document.getElementById('alert-message').innerText = message;
+    document.getElementById('alert-btn-cancel').classList.remove('hidden');
+    document.getElementById('alert-btn-ok').innerText = "Confirm";
+    
+    document.getElementById('custom-alert-modal').classList.remove('hidden');
+    
+    return new Promise(resolve => {
+        confirmResolve = (val) => {
+            document.getElementById('custom-alert-modal').classList.add('hidden');
+            resolve(val);
+        };
+    });
+}
+
+function resolveCustomConfirm(value) {
+    if (confirmResolve) {
+        confirmResolve(value);
+    }
 }

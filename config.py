@@ -4,9 +4,10 @@ import os
 CONFIG_FILE = "config.json"
 
 class ConfigManager:
-    def __init__(self):
+    def __init__(self, config_file=None):
         # Resolve config.json relative to this file
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
+        filename = config_file or CONFIG_FILE
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
         self.data = self.load()
 
     def load(self):
@@ -48,7 +49,7 @@ class ConfigManager:
             return {}
         return self.data.get("mappings", {}).get(device_name, {})
 
-    def add_mapping(self, device_name, event_key, target_type, target_id, action):
+    def add_mapping(self, device_name, event_key, target_type, target_id, action, invert=False, auto_on=False):
         if not device_name:
             return
         if "mappings" not in self.data:
@@ -58,7 +59,9 @@ class ConfigManager:
         self.data["mappings"][device_name][event_key] = {
             "target_type": target_type,
             "target_id": str(target_id),
-            "action": action
+            "action": action,
+            "invert": bool(invert),
+            "auto_on": bool(auto_on)
         }
         self.save()
 

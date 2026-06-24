@@ -61,6 +61,9 @@ class HueBridgeManager:
         self.bridge = None
         self.rate_limiter = None
         
+        self.last_lights = []
+        self.last_groups = []
+        
         # Statuses: 'idle', 'searching', 'needs_link', 'connected', 'error'
         self.status = 'idle'
         self.error_message = ''
@@ -156,13 +159,24 @@ class HueBridgeManager:
                 for lid, ldata in lights_data.items():
                     state = ldata.get('state', {})
                     
-                    # Parse device capabilities
-                    ltype = ldata.get('type', '')
-                    capabilities = ['dim']
-                    if 'color' in ltype.lower() or 'xy' in ltype.lower():
-                        capabilities = ['dim', 'ct', 'color']
-                    elif 'temp' in ltype.lower() or 'ambiance' in ltype.lower():
-                        capabilities = ['dim', 'ct']
+                    # Parse device capabilities: check keys first (reliable), fallback to type string
+                    capabilities = []
+                    if 'bri' in state:
+                        capabilities.append('dim')
+                    if 'ct' in state:
+                        capabilities.append('ct')
+                    if 'hue' in state or 'sat' in state or 'xy' in state:
+                        capabilities.append('color')
+                        
+                    if not capabilities:
+                        ltype = ldata.get('type', '')
+                        ltype_lower = ltype.lower()
+                        if 'temperature' in ltype_lower or 'temp' in ltype_lower:
+                            capabilities = ['dim', 'ct']
+                        elif 'color' in ltype_lower:
+                            capabilities = ['dim', 'ct', 'color']
+                        else:
+                            capabilities = ['dim']
                         
                     lights.append({
                         'id': str(lid),
@@ -171,6 +185,7 @@ class HueBridgeManager:
                         'bri': state.get('bri', 0),
                         'hue': state.get('hue', 0),
                         'sat': state.get('sat', 0),
+                        'type': ldata.get('type', 'Light'),
                         'capabilities': capabilities
                     })
             
@@ -178,6 +193,19 @@ class HueBridgeManager:
             if isinstance(groups_data, dict):
                 for gid, gdata in groups_data.items():
                     action = gdata.get('action', {})
+                    g_lights = gdata.get('lights', [])
+                    
+                    # Compute capabilities as union of member lights
+                    g_capabilities = set()
+                    for lid in g_lights:
+                        l_parsed = next((l for l in lights if l['id'] == str(lid)), None)
+                        if l_parsed:
+                            g_capabilities.update(l_parsed['capabilities'])
+                            
+                    # Fallback to default if group is empty or lights aren't resolved
+                    if not g_capabilities:
+                        g_capabilities = {'dim', 'ct', 'color'}
+                        
                     groups.append({
                         'id': str(gid),
                         'name': gdata.get('name', f"Group {gid}"),
@@ -185,7 +213,8 @@ class HueBridgeManager:
                         'bri': action.get('bri', 0),
                         'hue': action.get('hue', 0),
                         'sat': action.get('sat', 0),
-                        'capabilities': ['dim', 'ct', 'color'] # Groups default to full capabilities
+                        'type': gdata.get('type', 'Group'),
+                        'capabilities': list(g_capabilities)
                     })
             
             scenes = []
@@ -199,6 +228,8 @@ class HueBridgeManager:
                             'group_id': str(group_id)
                         })
                     
+            self.last_lights = lights
+            self.last_groups = groups
             return {'lights': lights, 'groups': groups, 'scenes': scenes}
         except Exception as e:
             print(f"[Hue] Error fetching devices: {e}")
@@ -263,7 +294,7 @@ class HueBridgeManager:
         except Exception as e:
             print(f"[Hue] RGB breakout thread error: {e}")
 
-    def set_state(self, target_type, target_id, param, value):
+    def set_state(self, target_type, target_id, param, value, auto_on=False):
         if self.status != 'connected' or not self.rate_limiter or not self.bridge:
             return False
             
@@ -283,6 +314,31 @@ class HueBridgeManager:
             value = int(153 + (value * (347.0 / 127.0)))
         elif param in ('Red', 'Green', 'Blue'):
             channel = param.lower()
+            
+            # Auto-on checking for RGB breakouts
+            if auto_on:
+                is_currently_off = False
+                if target_type == 'light':
+                    l_cache = next((l for l in getattr(self, 'last_lights', []) if l['id'] == str(target_id)), None)
+                    if l_cache and not l_cache.get('on', False):
+                        is_currently_off = True
+                elif target_type == 'group':
+                    g_cache = next((g for g in getattr(self, 'last_groups', []) if g['id'] == str(target_id)), None)
+                    if g_cache and not g_cache.get('on', False):
+                        is_currently_off = True
+
+                if is_currently_off:
+                    self.rate_limiter.send_command(target_type, target_id, 'on', True)
+                    # Update cache state
+                    if target_type == 'light':
+                        for l in getattr(self, 'last_lights', []):
+                            if l['id'] == str(target_id):
+                                l['on'] = True
+                    elif target_type == 'group':
+                        for g in getattr(self, 'last_groups', []):
+                            if g['id'] == str(target_id):
+                                g['on'] = True
+
             # Execute RGB updates in a background thread to keep MIDI loops non-blocking
             threading.Thread(
                 target=self._update_rgb, 
@@ -293,6 +349,30 @@ class HueBridgeManager:
             
         if not hue_param:
             return False
+
+        # Auto-on logic for value controllers (bri, ct, hue, sat)
+        if auto_on and hue_param != 'on':
+            is_currently_off = False
+            if target_type == 'light':
+                l_cache = next((l for l in getattr(self, 'last_lights', []) if l['id'] == str(target_id)), None)
+                if l_cache and not l_cache.get('on', False):
+                    is_currently_off = True
+            elif target_type == 'group':
+                g_cache = next((g for g in getattr(self, 'last_groups', []) if g['id'] == str(target_id)), None)
+                if g_cache and not g_cache.get('on', False):
+                    is_currently_off = True
+
+            if is_currently_off:
+                self.rate_limiter.send_command(target_type, target_id, 'on', True)
+                # Update cache
+                if target_type == 'light':
+                    for l in getattr(self, 'last_lights', []):
+                        if l['id'] == str(target_id):
+                            l['on'] = True
+                elif target_type == 'group':
+                    for g in getattr(self, 'last_groups', []):
+                        if g['id'] == str(target_id):
+                            g['on'] = True
             
         # Toggle logic if value is None or 'toggle'
         if hue_param == 'on' and (value is None or value == 'toggle'):
