@@ -611,6 +611,25 @@ async fn run_bg_worker(
     }
 }
 
+fn load_icon() -> Option<egui::IconData> {
+    let icon_bytes = include_bytes!("../resources/icon_512.png");
+    match image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Png) {
+        Ok(image) => {
+            let image = image.to_rgba8();
+            let (width, height) = image.dimensions();
+            Some(egui::IconData {
+                rgba: image.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(e) => {
+            eprintln!("Failed to load icon: {}", e);
+            None
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
     // 1. Load config
@@ -624,13 +643,19 @@ async fn main() -> Result<(), eframe::Error> {
     let (bg_tx, bg_rx) = unbounded_channel();
 
     // 4. Setup eframe options
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("HueMIDIty")
+        .with_inner_size([720.0, 480.0])
+        .with_min_inner_size([640.0, 400.0])
+        .with_active(true)
+        .with_visible(true);
+
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("HueMIDIty")
-            .with_inner_size([720.0, 480.0])
-            .with_min_inner_size([640.0, 400.0])
-            .with_active(true)
-            .with_visible(true),
+        viewport,
         ..Default::default()
     };
 

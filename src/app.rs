@@ -8,7 +8,7 @@ pub fn setup_custom_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     
     // Background and frame colors
-    visuals.panel_fill = egui::Color32::from_rgb(15, 17, 26); // #0F111A deep dark
+    visuals.panel_fill = egui::Color32::from_rgb(11, 12, 18); // Darker background with same hue as widgets
     visuals.window_fill = egui::Color32::from_rgb(22, 25, 37); // Glassmorphism container
     
     // Widget styles
@@ -498,27 +498,37 @@ impl HueMIDItyApp {
 
         // Scrollable widgets grid
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let width = ui.available_width();
-            let columns = (width / 240.0).floor().max(1.0) as usize;
+            let width = ui.available_width() - 8.0;
+            let layout_items = self.config.dashboard_layout.clone();
+            let num_items = layout_items.len();
+            let columns = if num_items == 0 {
+                1
+            } else {
+                let max_cols = (width / 240.0).floor().max(1.0) as usize;
+                max_cols.min(num_items)
+            };
+            let spacing_x = 12.0;
+            let widget_width = (width - (columns - 1) as f32 * spacing_x) / columns as f32;
             
             // Simple grid layout
             egui::Grid::new("dashboard_grid")
-                .spacing(egui::vec2(12.0, 12.0))
+                .spacing(egui::vec2(spacing_x, 12.0))
                 .show(ui, |ui| {
                     let mut remove_index = None;
                     let mut swap_indices = None;
                     
-                    let layout_items = self.config.dashboard_layout.clone();
                     for (idx, item) in layout_items.iter().enumerate() {
                         let card_response = egui::Frame::window(ui.style())
                             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
-                            .inner_margin(egui::Margin { left: 0, right: 0, top: 12, bottom: 0 })
+                            .shadow(egui::Shadow::NONE)
+                            .inner_margin(egui::Margin::symmetric(16, 12))
                             .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(220.0, 110.0));
+                                ui.set_min_width(widget_width);
+                                ui.set_max_width(widget_width);
+                                ui.set_min_height(110.0);
                                 ui.vertical(|ui| {
                                     // Header of card
                                     ui.horizontal(|ui| {
-                                        ui.add_space(12.0);
                                         let drag_handle = ui.label("⠿");
                                         let drag_response = ui.interact(
                                             drag_handle.rect,
@@ -545,10 +555,15 @@ impl HueMIDItyApp {
                                         ui.heading(egui::RichText::new(&name).size(14.0).strong());
                                         
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.add_space(12.0);
-                                            if ui.button("×").clicked() {
-                                                remove_index = Some(idx);
-                                            }
+                                            ui.scope(|ui| {
+                                                ui.style_mut().visuals.widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+                                                ui.style_mut().visuals.widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+                                                ui.style_mut().visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(140, 140, 160));
+                                                ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                                                if ui.button("×").clicked() {
+                                                    remove_index = Some(idx);
+                                                }
+                                            });
                                         });
                                     });
 
@@ -558,7 +573,6 @@ impl HueMIDItyApp {
                                     if item.r#type == "light" {
                                         if let Some(light) = self.lights.get_mut(&item.id) {
                                             ui.horizontal(|ui| {
-                                                ui.add_space(12.0);
                                                 // Toggle switch on the left
                                                 let mut is_on = light.state.on.unwrap_or(false);
                                                 if toggle_ui(ui, &mut is_on).changed() {
@@ -571,7 +585,6 @@ impl HueMIDItyApp {
 
                                                 // Colorswatch right-aligned
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    ui.add_space(12.0);
                                                     if light.capabilities().contains(&Capability::Color) {
                                                         let h = light.state.hue.unwrap_or(0) as f32 / 65535.0 * 360.0;
                                                         let s = light.state.sat.unwrap_or(0) as f32 / 254.0;
@@ -635,14 +648,12 @@ impl HueMIDItyApp {
                                             }
                                         } else {
                                             ui.horizontal(|ui| {
-                                                ui.add_space(12.0);
                                                 ui.colored_label(egui::Color32::from_rgb(120, 120, 120), "Offline");
                                             });
                                         }
                                     } else if item.r#type == "group" {
                                         if let Some(group) = self.groups.get_mut(&item.id) {
                                             ui.horizontal(|ui| {
-                                                ui.add_space(12.0);
                                                 // Toggle switch on the left
                                                 let mut is_on = group.action.on.unwrap_or(false);
                                                 if toggle_ui(ui, &mut is_on).changed() {
@@ -655,7 +666,6 @@ impl HueMIDItyApp {
 
                                                 // Colorswatch right-aligned
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                    ui.add_space(12.0);
                                                     let mut group_supports_color = false;
                                                     for light_id in &group.lights {
                                                         if let Some(l) = self.lights.get(light_id) {
@@ -729,7 +739,6 @@ impl HueMIDItyApp {
                                             }
                                         } else {
                                             ui.horizontal(|ui| {
-                                                ui.add_space(12.0);
                                                 ui.label("Unknown Group");
                                             });
                                         }
@@ -828,164 +837,212 @@ impl HueMIDItyApp {
         // Floating add button
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
             ui.add_space(20.0);
-            if ui.button(egui::RichText::new(" ➕ Add Widgets ").strong().size(16.0)).clicked() {
-                self.add_widgets.is_open = true;
-                self.add_widgets.selected_lights.clear();
-                self.add_widgets.selected_groups.clear();
-            }
+            ui.scope(|ui| {
+                let btn_size = egui::vec2(36.0, 36.0);
+                ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(18);
+                ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(18);
+                ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(18);
+
+                let btn = egui::Button::new(egui::RichText::new("+").size(20.0).strong());
+                if ui.add_sized(btn_size, btn).clicked() {
+                    self.add_widgets.is_open = true;
+                    self.add_widgets.selected_lights.clear();
+                    self.add_widgets.selected_groups.clear();
+                }
+            });
         });
     }
 
     fn draw_midi_mapping_tab(&mut self, ui: &mut egui::Ui) {
-        ui.columns(2, |columns| {
-            // Column 1: Live inputs & Log
-            columns[0].vertical(|ui| {
-                ui.heading("MIDI Inputs");
-                ui.add_space(10.0);
+        let spacing = 16.0;
+        let total_width = ui.available_width();
+        let col_width = (total_width - spacing) / 2.0;
 
-                // Port Selector Dropdown
-                let mut current_port = self.config.selected_device.clone();
-                egui::ComboBox::from_label("Active Device")
-                    .selected_text(if current_port.is_empty() { "Select MIDI Device" } else { &current_port })
-                    .show_ui(ui, |ui| {
-                        for port in &self.midi_ports {
-                            ui.selectable_value(&mut current_port, port.clone(), port);
-                        }
-                    });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = spacing;
 
-                if current_port != self.config.selected_device {
-                    self.config.selected_device = current_port.clone();
-                    self.config.save().ok();
-                    self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-                    self.bg_tx.send(BgMessage::ChangeMidiPort(current_port)).ok();
-                    self.midi_status = "Connecting...".to_string();
-                }
+            // Column 1 Frame: MIDI Inputs
+            let frame1 = egui::Frame::window(ui.style())
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
+                .shadow(ui.style().visuals.window_shadow)
+                .inner_margin(egui::Margin::symmetric(16, 16));
 
-                ui.add_space(10.0);
-                
-                // Status badge
-                let status_color = if self.midi_status.contains("Active") {
-                    egui::Color32::from_rgb(34, 197, 94) // Green
-                } else if self.midi_status.contains("Connecting") {
-                    egui::Color32::from_rgb(234, 179, 8) // Yellow
-                } else {
-                    egui::Color32::from_rgb(120, 120, 120) // Gray
-                };
-                ui.horizontal(|ui| {
-                    ui.label("Status:");
-                    ui.colored_label(status_color, &self.midi_status);
-                });
-
-                ui.add_space(20.0);
-                ui.heading("Activity Log");
-                ui.add_space(5.0);
-
-                // Monospace scrollable log box
-                egui::Frame::dark_canvas(ui.style())
-                    .fill(egui::Color32::from_rgb(8, 10, 18))
-                    .show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(ui.available_width(), 160.0));
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            if self.midi_log.is_empty() {
-                                ui.centered_and_justified(|ui| {
-                                    ui.weak("No MIDI messages received yet. Move a knob/slider or press a key.");
-                                });
-                            } else {
-                                for entry in &self.midi_log {
-                                    ui.horizontal(|ui| {
-                                        ui.colored_label(egui::Color32::from_rgb(120, 120, 140), format!("[{}]", entry.time));
-                                        ui.colored_label(egui::Color32::from_rgb(168, 85, 247), &entry.event_key);
-                                        ui.label(format!("val: {}", entry.value));
-                                        
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            if ui.small_button("Bind").clicked() {
-                                                self.mapping_creator.is_open = true;
-                                                self.mapping_creator.event_key = entry.event_key.clone();
-                                            }
-                                        });
-                                    });
-                                }
-                            }
+            ui.allocate_ui(egui::vec2(col_width, ui.available_height()), |ui| {
+                frame1.show(ui, |ui| {
+                    ui.set_min_height(ui.available_height());
+                    ui.set_min_width(col_width);
+                    ui.vertical(|ui| {
+                        // Title bar with right-aligned status
+                        ui.horizontal(|ui| {
+                            ui.heading("MIDI Inputs");
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let status_color = if self.midi_status.contains("Active") {
+                                    egui::Color32::from_rgb(34, 197, 94) // Green
+                                } else if self.midi_status.contains("Connecting") {
+                                    egui::Color32::from_rgb(234, 179, 8) // Yellow
+                                } else {
+                                    egui::Color32::from_rgb(120, 120, 120) // Gray
+                                };
+                                ui.colored_label(status_color, &self.midi_status);
+                                ui.label("Status:");
+                            });
                         });
-                    });
-            });
+                        ui.add_space(10.0);
 
-            // Column 2: Mappings list
-            columns[1].vertical(|ui| {
-                ui.heading("Active Mappings");
-                ui.add_space(10.0);
+                        // Port Selector Dropdown
+                        let mut current_port = self.config.selected_device.clone();
+                        egui::ComboBox::from_label("Active Device")
+                            .selected_text(if current_port.is_empty() { "Select MIDI Device" } else { &current_port })
+                            .show_ui(ui, |ui| {
+                                for port in &self.midi_ports {
+                                    ui.selectable_value(&mut current_port, port.clone(), port);
+                                }
+                            });
 
-                let selected_device = self.config.selected_device.clone();
-                let device_mappings = self.config.mappings.entry(selected_device.clone()).or_insert_with(HashMap::new);
+                        if current_port != self.config.selected_device {
+                            self.config.selected_device = current_port.clone();
+                            self.config.save().ok();
+                            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+                            self.bg_tx.send(BgMessage::ChangeMidiPort(current_port)).ok();
+                            self.midi_status = "Connecting...".to_string();
+                        }
 
-                if device_mappings.is_empty() {
-                    ui.weak("No mappings configured for this controller. Press 'Bind' in the Activity Log to create one.");
-                    return;
-                }
+                        ui.add_space(20.0);
+                        ui.heading("Activity Log");
+                        ui.add_space(5.0);
 
-                let mut delete_key = None;
-                let mut edit_key = None;
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (event, mapping) in device_mappings.iter() {
-                        egui::Frame::window(ui.style())
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
+                        // Activity log canvas
+                        egui::Frame::dark_canvas(ui.style())
+                            .fill(egui::Color32::from_rgb(8, 10, 18))
                             .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(ui.available_width(), 48.0));
-                                ui.horizontal(|ui| {
-                                    ui.colored_label(egui::Color32::from_rgb(168, 85, 247), event);
-                                    
-                                    let icon = match mapping.target_type.as_str() {
-                                        "light" => "💡",
-                                        "group" => "📦",
-                                        _ => "🎬",
-                                    };
-                                    ui.label(icon);
-
-                                    let target_name = match mapping.target_type.as_str() {
-                                        "light" => self.lights.get(&mapping.target_id).map(|l| l.name.clone()).unwrap_or_else(|| format!("Light {}", mapping.target_id)),
-                                        "group" => self.groups.get(&mapping.target_id).map(|g| g.name.clone()).unwrap_or_else(|| format!("Group {}", mapping.target_id)),
-                                        _ => self.scenes.get(&mapping.target_id).map(|s| s.name.clone()).unwrap_or_else(|| format!("Scene {}", mapping.target_id)),
-                                    };
-                                    ui.label(&target_name);
-                                    ui.separator();
-                                    ui.label(format!("Action: {}", mapping.action));
-
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.small_button("🗑").clicked() {
-                                            delete_key = Some(event.clone());
+                                ui.set_min_size(egui::vec2(ui.available_width(), 160.0));
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    if self.midi_log.is_empty() {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.weak("No MIDI messages received yet. Move a knob/slider or press a key.");
+                                        });
+                                    } else {
+                                        for entry in &self.midi_log {
+                                            ui.horizontal(|ui| {
+                                                ui.colored_label(egui::Color32::from_rgb(120, 120, 140), format!("[{}]", entry.time));
+                                                ui.colored_label(egui::Color32::from_rgb(168, 85, 247), &entry.event_key);
+                                                ui.label(format!("val: {}", entry.value));
+                                                
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if ui.small_button("Bind").clicked() {
+                                                        self.mapping_creator.is_open = true;
+                                                        self.mapping_creator.event_key = entry.event_key.clone();
+                                                    }
+                                                });
+                                            });
                                         }
-                                        if ui.small_button("✏").clicked() {
-                                            edit_key = Some(event.clone());
-                                        }
-                                    });
+                                    }
                                 });
                             });
-                        ui.add_space(4.0);
-                    }
+                    });
                 });
+            });
 
-                if let Some(key) = delete_key {
-                    if let Some(maps) = self.config.mappings.get_mut(&selected_device) {
-                        maps.remove(&key);
-                        self.config.save().ok();
-                        self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-                    }
-                }
+            // Column 2 Frame: Active Mappings
+            let frame2 = egui::Frame::window(ui.style())
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
+                .shadow(ui.style().visuals.window_shadow)
+                .inner_margin(egui::Margin::symmetric(16, 16));
 
-                if let Some(key) = edit_key {
-                    if let Some(maps) = self.config.mappings.get(&selected_device) {
-                        if let Some(map) = maps.get(&key) {
-                            self.mapping_creator.is_open = true;
-                            self.mapping_creator.event_key = key.clone();
-                            self.mapping_creator.target_type = map.target_type.clone();
-                            self.mapping_creator.target_id = map.target_id.clone();
-                            self.mapping_creator.action = map.action.clone();
-                            self.mapping_creator.invert = map.invert;
-                            self.mapping_creator.auto_on = map.auto_on;
+            ui.allocate_ui(egui::vec2(col_width, ui.available_height()), |ui| {
+                frame2.show(ui, |ui| {
+                    ui.set_min_height(ui.available_height());
+                    ui.set_min_width(col_width);
+                    ui.vertical(|ui| {
+                        ui.heading("Active Mappings");
+                        ui.add_space(10.0);
+
+                        let selected_device = self.config.selected_device.clone();
+                        let device_mappings = self.config.mappings.entry(selected_device.clone()).or_insert_with(HashMap::new);
+
+                        if device_mappings.is_empty() {
+                            ui.weak("No mappings configured for this controller. Press 'Bind' in the Activity Log to create one.");
+                            return;
                         }
-                    }
-                }
+
+                        let mut delete_key = None;
+                        let mut edit_key = None;
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            egui::Grid::new("active_mappings_table")
+                                .num_columns(4)
+                                .spacing(egui::vec2(12.0, 10.0))
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    // Table Headers
+                                    ui.label(egui::RichText::new("MIDI Event").strong());
+                                    ui.label(egui::RichText::new("Target").strong());
+                                    ui.label(egui::RichText::new("Action").strong());
+                                    ui.label(egui::RichText::new("Actions").strong());
+                                    ui.end_row();
+
+                                    for (event, mapping) in device_mappings.iter() {
+                                        // Column 1: Event
+                                        ui.colored_label(egui::Color32::from_rgb(168, 85, 247), event);
+
+                                        // Column 2: Target
+                                        ui.horizontal(|ui| {
+                                            let icon = match mapping.target_type.as_str() {
+                                                "light" => "💡",
+                                                "group" => "📦",
+                                                _ => "🎬",
+                                            };
+                                            ui.label(icon);
+
+                                            let target_name = match mapping.target_type.as_str() {
+                                                "light" => self.lights.get(&mapping.target_id).map(|l| l.name.clone()).unwrap_or_else(|| format!("Light {}", mapping.target_id)),
+                                                "group" => self.groups.get(&mapping.target_id).map(|g| g.name.clone()).unwrap_or_else(|| format!("Group {}", mapping.target_id)),
+                                                _ => self.scenes.get(&mapping.target_id).map(|s| s.name.clone()).unwrap_or_else(|| format!("Scene {}", mapping.target_id)),
+                                            };
+                                            ui.label(&target_name);
+                                        });
+
+                                        // Column 3: Action
+                                        ui.label(&mapping.action);
+
+                                        // Column 4: Edit & Delete
+                                        ui.horizontal(|ui| {
+                                            if ui.small_button("✏").clicked() {
+                                                edit_key = Some(event.clone());
+                                            }
+                                            if ui.small_button("🗑").clicked() {
+                                                delete_key = Some(event.clone());
+                                            }
+                                        });
+
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+
+                        if let Some(key) = delete_key {
+                            if let Some(maps) = self.config.mappings.get_mut(&selected_device) {
+                                maps.remove(&key);
+                                self.config.save().ok();
+                                self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+                            }
+                        }
+
+                        if let Some(key) = edit_key {
+                            if let Some(maps) = self.config.mappings.get(&selected_device) {
+                                if let Some(map) = maps.get(&key) {
+                                    self.mapping_creator.is_open = true;
+                                    self.mapping_creator.event_key = key.clone();
+                                    self.mapping_creator.target_type = map.target_type.clone();
+                                    self.mapping_creator.target_id = map.target_id.clone();
+                                    self.mapping_creator.action = map.action.clone();
+                                    self.mapping_creator.invert = map.invert;
+                                    self.mapping_creator.auto_on = map.auto_on;
+                                }
+                            }
+                        }
+                    });
+                });
             });
         });
     }
