@@ -315,9 +315,11 @@ impl HueMIDItyApp {
                     }
                 }
                 GuiMessage::DevicesRefreshed { lights, groups, scenes } => {
-                    self.lights = lights;
-                    self.groups = groups;
-                    self.scenes = scenes;
+                    if !self.add_widgets.is_open {
+                        self.lights = lights;
+                        self.groups = groups;
+                        self.scenes = scenes;
+                    }
                 }
                 GuiMessage::Error(err_msg) => {
                     self.midi_status = format!("Conflict: {}", err_msg);
@@ -431,49 +433,65 @@ impl HueMIDItyApp {
             self.last_port_refresh = Instant::now();
         }
 
+        let any_modal_open = self.add_widgets.is_open || self.mapping_creator.is_open;
+
         // Top panel header
         egui::TopBottomPanel::top("top_header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("HueMIDIty");
-                ui.add_space(20.0);
+            ui.add_enabled_ui(!any_modal_open, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("HueMIDIty");
+                    ui.add_space(20.0);
 
-                // Tab buttons
-                ui.selectable_value(&mut self.active_tab, Tab::Dashboard, "📋 Dashboard");
-                ui.selectable_value(&mut self.active_tab, Tab::MidiMapping, "🎹 MIDI Mapping");
-                ui.selectable_value(&mut self.active_tab, Tab::Settings, "⚙ Settings");
+                    // Tab buttons
+                    ui.selectable_value(&mut self.active_tab, Tab::Dashboard, "📋 Dashboard");
+                    ui.selectable_value(&mut self.active_tab, Tab::MidiMapping, "🎹 MIDI Mapping");
+                    ui.selectable_value(&mut self.active_tab, Tab::Settings, "⚙ Settings");
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Refresh button
-                    if ui.button("🔄 Refresh").clicked() {
-                        self.bg_tx.send(BgMessage::RefreshDevices).ok();
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Refresh button
+                        if ui.button("🔄 Refresh").clicked() {
+                            self.bg_tx.send(BgMessage::RefreshDevices).ok();
+                        }
 
-                    // Green connection dot
-                    ui.horizontal(|ui| {
-                        let color = match &self.connection_state {
-                            BridgeConnectionState::Connected { .. } => egui::Color32::from_rgb(34, 197, 94), // Green
-                            _ => egui::Color32::from_rgb(239, 68, 68), // Red
-                        };
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(rect.center(), 5.0, color);
-                        ui.label("Connected");
+                        // Green connection dot
+                        ui.horizontal(|ui| {
+                            let color = match &self.connection_state {
+                                BridgeConnectionState::Connected { .. } => egui::Color32::from_rgb(34, 197, 94), // Green
+                                _ => egui::Color32::from_rgb(239, 68, 68), // Red
+                            };
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                            ui.painter().circle_filled(rect.center(), 5.0, color);
+                            ui.label("Connected");
+                        });
                     });
                 });
             });
+
+            // Dim the header in place when a modal is open, without blocking the modal's input.
+            if any_modal_open {
+                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(150));
+            }
+        });
+
+        // Content
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_enabled_ui(!any_modal_open, |ui| {
+                match self.active_tab {
+                    Tab::Dashboard => self.draw_dashboard_tab(ui),
+                    Tab::MidiMapping => self.draw_midi_mapping_tab(ui),
+                    Tab::Settings => self.draw_settings_tab(ui),
+                }
+            });
+
+            // Dim the content area in place when a modal is open, without blocking the modal's input.
+            if any_modal_open {
+                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(150));
+            }
         });
 
         // Modals
         self.draw_mapping_modal(ctx);
         self.draw_widget_modal(ctx);
-
-        // Content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                Tab::Dashboard => self.draw_dashboard_tab(ui),
-                Tab::MidiMapping => self.draw_midi_mapping_tab(ui),
-                Tab::Settings => self.draw_settings_tab(ui),
-            }
-        });
     }
 
     fn draw_dashboard_tab(&mut self, ui: &mut egui::Ui) {
@@ -498,7 +516,7 @@ impl HueMIDItyApp {
 
         // Scrollable widgets grid
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let width = ui.available_width() - 8.0;
+            let width = ui.available_width() - 8.0; // Subtract 8.0 to account for scrollbar
             let layout_items = self.config.dashboard_layout.clone();
             let num_items = layout_items.len();
             let columns = if num_items == 0 {
@@ -523,9 +541,11 @@ impl HueMIDItyApp {
                             .shadow(egui::Shadow::NONE)
                             .inner_margin(egui::Margin::symmetric(16, 12))
                             .show(ui, |ui| {
-                                ui.set_min_width(widget_width);
-                                ui.set_max_width(widget_width);
+                                let content_width = widget_width - 34.0;
+                                ui.set_min_width(content_width);
+                                ui.set_max_width(content_width);
                                 ui.set_min_height(110.0);
+                                
                                 ui.vertical(|ui| {
                                     // Header of card
                                     ui.horizontal(|ui| {
@@ -751,7 +771,16 @@ impl HueMIDItyApp {
                         if ui.rect_contains_pointer(card_rect) {
                             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                             if scroll.abs() > 0.0 {
-                                let diff = if scroll > 0.0 { 15i16 } else { -15i16 };
+                                let raw_diff = scroll * 0.30; // scaled down to be fine-grained
+                                let diff = if raw_diff.abs() > 0.0 {
+                                    if raw_diff > 0.0 {
+                                        raw_diff.max(1.0) as i16
+                                    } else {
+                                        raw_diff.min(-1.0) as i16
+                                    }
+                                } else {
+                                    0
+                                };
                                 if item.r#type == "light" {
                                     if let Some(light) = self.lights.get_mut(&item.id) {
                                         let current_bri = light.state.bri.unwrap_or(0) as i16;
@@ -834,28 +863,55 @@ impl HueMIDItyApp {
                 });
         });
 
-        // Floating add button
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Max), |ui| {
-            ui.add_space(20.0);
-            ui.scope(|ui| {
-                let btn_size = egui::vec2(36.0, 36.0);
-                ui.style_mut().visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(18);
-                ui.style_mut().visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(18);
-                ui.style_mut().visuals.widgets.active.corner_radius = egui::CornerRadius::same(18);
-
-                let btn = egui::Button::new(egui::RichText::new("+").size(20.0).strong());
-                if ui.add_sized(btn_size, btn).clicked() {
-                    self.add_widgets.is_open = true;
-                    self.add_widgets.selected_lights.clear();
-                    self.add_widgets.selected_groups.clear();
-                }
+        // Floating add button using Area to overlay on top of the ScrollArea
+        egui::Area::new(egui::Id::new("floating_add_widgets_button"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-24.0, -24.0))
+            .show(ui.ctx(), |ui| {
+                ui.scope(|ui| {
+                    let btn_size = egui::vec2(44.0, 44.0);
+                    let (rect, response) = ui.allocate_exact_size(btn_size, egui::Sense::click());
+                    if response.clicked() {
+                        self.add_widgets.is_open = true;
+                        self.add_widgets.selected_lights.clear();
+                        self.add_widgets.selected_groups.clear();
+                    }
+                    
+                    let bg_color = if response.is_pointer_button_down_on() {
+                        egui::Color32::from_rgb(150, 70, 230)
+                    } else if response.hovered() {
+                        egui::Color32::from_rgb(180, 100, 255)
+                    } else {
+                        egui::Color32::from_rgb(168, 85, 247)
+                    };
+                    
+                    ui.painter().circle_filled(rect.center(), 22.0, bg_color);
+                    
+                    let thickness = 2.5;
+                    let line_len = 14.0;
+                    let center = rect.center();
+                    
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(center.x - line_len / 2.0, center.y),
+                            egui::pos2(center.x + line_len / 2.0, center.y),
+                        ],
+                        egui::Stroke::new(thickness, egui::Color32::WHITE),
+                    );
+                    
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(center.x, center.y - line_len / 2.0),
+                            egui::pos2(center.x, center.y + line_len / 2.0),
+                        ],
+                        egui::Stroke::new(thickness, egui::Color32::WHITE),
+                    );
+                });
             });
-        });
     }
 
     fn draw_midi_mapping_tab(&mut self, ui: &mut egui::Ui) {
         let spacing = 16.0;
-        let total_width = ui.available_width();
+        let total_width = ui.available_width(); // Stretch symmetric to both edges
         let col_width = (total_width - spacing) / 2.0;
 
         ui.horizontal(|ui| {
@@ -870,7 +926,9 @@ impl HueMIDItyApp {
             ui.allocate_ui(egui::vec2(col_width, ui.available_height()), |ui| {
                 frame1.show(ui, |ui| {
                     ui.set_min_height(ui.available_height());
-                    ui.set_min_width(col_width);
+                    let inner_w = col_width - 34.0;
+                    ui.set_min_width(inner_w);
+                    ui.set_max_width(inner_w);
                     ui.vertical(|ui| {
                         // Title bar with right-aligned status
                         ui.horizontal(|ui| {
@@ -889,15 +947,25 @@ impl HueMIDItyApp {
                         });
                         ui.add_space(10.0);
 
-                        // Port Selector Dropdown
+                        // Active Device Label and Selector
+                        ui.label("Active Device");
+                        ui.add_space(4.0);
+                        
                         let mut current_port = self.config.selected_device.clone();
-                        egui::ComboBox::from_label("Active Device")
-                            .selected_text(if current_port.is_empty() { "Select MIDI Device" } else { &current_port })
-                            .show_ui(ui, |ui| {
+                        ui.scope(|ui| {
+                            // Larger padding for dropdown button to seem more significant
+                            ui.style_mut().spacing.button_padding = egui::vec2(12.0, 8.0);
+                            
+                            let combo = egui::ComboBox::from_id_salt("active_device_dropdown")
+                                .width(ui.available_width() - 8.0) // Grow to full width
+                                .selected_text(if current_port.is_empty() { "Select MIDI Device" } else { &current_port });
+                                
+                            combo.show_ui(ui, |ui| {
                                 for port in &self.midi_ports {
                                     ui.selectable_value(&mut current_port, port.clone(), port);
                                 }
                             });
+                        });
 
                         if current_port != self.config.selected_device {
                             self.config.selected_device = current_port.clone();
@@ -952,7 +1020,9 @@ impl HueMIDItyApp {
             ui.allocate_ui(egui::vec2(col_width, ui.available_height()), |ui| {
                 frame2.show(ui, |ui| {
                     ui.set_min_height(ui.available_height());
-                    ui.set_min_width(col_width);
+                    let inner_w = col_width - 34.0;
+                    ui.set_min_width(inner_w);
+                    ui.set_max_width(inner_w);
                     ui.vertical(|ui| {
                         ui.heading("Active Mappings");
                         ui.add_space(10.0);
@@ -968,6 +1038,12 @@ impl HueMIDItyApp {
                         let mut delete_key = None;
                         let mut edit_key = None;
 
+                        let table_width = inner_w - 50.0; // Subtract padding/scrollbar
+                        let col0_w = table_width * 0.25;
+                        let col1_w = table_width * 0.35;
+                        let col2_w = table_width * 0.25;
+                        let col3_w = table_width * 0.15;
+
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             egui::Grid::new("active_mappings_table")
                                 .num_columns(4)
@@ -975,44 +1051,68 @@ impl HueMIDItyApp {
                                 .striped(true)
                                 .show(ui, |ui| {
                                     // Table Headers
-                                    ui.label(egui::RichText::new("MIDI Event").strong());
-                                    ui.label(egui::RichText::new("Target").strong());
-                                    ui.label(egui::RichText::new("Action").strong());
-                                    ui.label(egui::RichText::new("Actions").strong());
+                                    ui.allocate_ui(egui::vec2(col0_w, 20.0), |ui| {
+                                        ui.set_min_width(col0_w);
+                                        ui.label(egui::RichText::new("MIDI Event").strong());
+                                    });
+                                    ui.allocate_ui(egui::vec2(col1_w, 20.0), |ui| {
+                                        ui.set_min_width(col1_w);
+                                        ui.label(egui::RichText::new("Target").strong());
+                                    });
+                                    ui.allocate_ui(egui::vec2(col2_w, 20.0), |ui| {
+                                        ui.set_min_width(col2_w);
+                                        ui.label(egui::RichText::new("Action").strong());
+                                    });
+                                    ui.allocate_ui(egui::vec2(col3_w, 20.0), |ui| {
+                                        ui.set_min_width(col3_w);
+                                        ui.label(egui::RichText::new("Actions").strong());
+                                    });
                                     ui.end_row();
 
                                     for (event, mapping) in device_mappings.iter() {
                                         // Column 1: Event
-                                        ui.colored_label(egui::Color32::from_rgb(168, 85, 247), event);
+                                        ui.allocate_ui(egui::vec2(col0_w, 20.0), |ui| {
+                                            ui.set_min_width(col0_w);
+                                            ui.colored_label(egui::Color32::from_rgb(168, 85, 247), event);
+                                        });
 
                                         // Column 2: Target
-                                        ui.horizontal(|ui| {
-                                            let icon = match mapping.target_type.as_str() {
-                                                "light" => "💡",
-                                                "group" => "📦",
-                                                _ => "🎬",
-                                            };
-                                            ui.label(icon);
+                                        ui.allocate_ui(egui::vec2(col1_w, 20.0), |ui| {
+                                            ui.set_min_width(col1_w);
+                                            ui.horizontal(|ui| {
+                                                let icon = match mapping.target_type.as_str() {
+                                                    "light" => "💡",
+                                                    "group" => "📦",
+                                                    _ => "🎬",
+                                                };
+                                                ui.label(icon);
 
-                                            let target_name = match mapping.target_type.as_str() {
-                                                "light" => self.lights.get(&mapping.target_id).map(|l| l.name.clone()).unwrap_or_else(|| format!("Light {}", mapping.target_id)),
-                                                "group" => self.groups.get(&mapping.target_id).map(|g| g.name.clone()).unwrap_or_else(|| format!("Group {}", mapping.target_id)),
-                                                _ => self.scenes.get(&mapping.target_id).map(|s| s.name.clone()).unwrap_or_else(|| format!("Scene {}", mapping.target_id)),
-                                            };
-                                            ui.label(&target_name);
+                                                let target_name = match mapping.target_type.as_str() {
+                                                    "light" => self.lights.get(&mapping.target_id).map(|l| l.name.clone()).unwrap_or_else(|| format!("Light {}", mapping.target_id)),
+                                                    "group" => self.groups.get(&mapping.target_id).map(|g| g.name.clone()).unwrap_or_else(|| format!("Group {}", mapping.target_id)),
+                                                    _ => self.scenes.get(&mapping.target_id).map(|s| s.name.clone()).unwrap_or_else(|| format!("Scene {}", mapping.target_id)),
+                                                };
+                                                ui.label(&target_name);
+                                            });
                                         });
 
                                         // Column 3: Action
-                                        ui.label(&mapping.action);
+                                        ui.allocate_ui(egui::vec2(col2_w, 20.0), |ui| {
+                                            ui.set_min_width(col2_w);
+                                            ui.label(&mapping.action);
+                                        });
 
                                         // Column 4: Edit & Delete
-                                        ui.horizontal(|ui| {
-                                            if ui.small_button("✏").clicked() {
-                                                edit_key = Some(event.clone());
-                                            }
-                                            if ui.small_button("🗑").clicked() {
-                                                delete_key = Some(event.clone());
-                                            }
+                                        ui.allocate_ui(egui::vec2(col3_w, 20.0), |ui| {
+                                            ui.set_min_width(col3_w);
+                                            ui.horizontal(|ui| {
+                                                if ui.small_button("✏").clicked() {
+                                                    edit_key = Some(event.clone());
+                                                }
+                                                if ui.small_button("🗑").clicked() {
+                                                    delete_key = Some(event.clone());
+                                                }
+                                            });
                                         });
 
                                         ui.end_row();
@@ -1272,61 +1372,148 @@ impl HueMIDItyApp {
         egui::Window::new("Add Widgets to Dashboard")
             .collapsible(false)
             .resizable(false)
+            .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.text_edit_singleline(&mut self.add_widgets.search_query);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.add_widgets.search_query)
+                        .hint_text("Filter list by name...")
+                );
                 ui.add_space(10.0);
 
                 // Create checklist of devices not in layout
                 let current_layout_ids: HashSet<String> = self.config.dashboard_layout.iter().map(|item| item.id.clone()).collect();
                 let query = self.add_widgets.search_query.to_lowercase();
 
-                egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
-                    ui.heading("Lights");
-                    for (id, light) in &self.lights {
-                        if !light.name.to_lowercase().contains(&query) {
-                            continue;
-                        }
-                        let added = current_layout_ids.contains(id);
-                        if added {
-                            ui.add_enabled(false, egui::Checkbox::new(&mut true, format!("{} (added)", light.name)));
-                        } else {
-                            let mut selected = self.add_widgets.selected_lights.contains(id);
-                            if ui.checkbox(&mut selected, &light.name).changed() {
-                                if selected {
-                                    self.add_widgets.selected_lights.insert(id.clone());
-                                } else {
-                                    self.add_widgets.selected_lights.remove(id);
-                                }
-                            }
-                        }
-                    }
+                let mut sorted_lights: Vec<(&String, &Light)> = self.lights.iter().collect();
+                sorted_lights.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
 
-                    ui.add_space(10.0);
-                    ui.heading("Groups");
-                    for (id, group) in &self.groups {
-                        if !group.name.to_lowercase().contains(&query) {
-                            continue;
-                        }
-                        let added = current_layout_ids.contains(id);
-                        if added {
-                            ui.add_enabled(false, egui::Checkbox::new(&mut true, format!("{} (added)", group.name)));
-                        } else {
-                            let mut selected = self.add_widgets.selected_groups.contains(id);
-                            if ui.checkbox(&mut selected, &group.name).changed() {
-                                if selected {
-                                    self.add_widgets.selected_groups.insert(id.clone());
-                                } else {
-                                    self.add_widgets.selected_groups.remove(id);
+                let mut sorted_groups: Vec<(&String, &Group)> = self.groups.iter().collect();
+                sorted_groups.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+
+                egui::ScrollArea::vertical()
+                    .max_height(250.0)
+                    .min_scrolled_width(420.0)
+                    .show(ui, |ui| {
+                        ui.heading("Lights");
+                        for (id, light) in sorted_lights {
+                            if !light.name.to_lowercase().contains(&query) {
+                                continue;
+                            }
+                            let added = current_layout_ids.contains(id);
+                            let row_w = ui.available_width();
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, 32.0), egui::Sense::click());
+                            
+                            if added {
+                                let visuals = ui.style().visuals.widgets.noninteractive;
+                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                child_ui.add_space(8.0);
+                                let mut val = true;
+                                child_ui.add_enabled(false, egui::Checkbox::new(&mut val, ""));
+                                child_ui.colored_label(visuals.text_color(), format!("{} (added)", light.name));
+                            } else {
+                                let mut selected = self.add_widgets.selected_lights.contains(id);
+                                
+                                if response.clicked() {
+                                    selected = !selected;
+                                    if selected {
+                                        self.add_widgets.selected_lights.insert(id.clone());
+                                    } else {
+                                        self.add_widgets.selected_lights.remove(id);
+                                    }
                                 }
+                                
+                                let bg_fill = if response.hovered() {
+                                    egui::Color32::from_rgba_unmultiplied(168, 85, 247, 25)
+                                } else if selected {
+                                    egui::Color32::from_rgba_unmultiplied(168, 85, 247, 15)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                if bg_fill != egui::Color32::TRANSPARENT {
+                                    ui.painter().rect_filled(rect, 4.0, bg_fill);
+                                }
+                                
+                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                child_ui.add_space(8.0);
+                                let mut cb_val = selected;
+                                if child_ui.checkbox(&mut cb_val, "").changed() {
+                                    selected = cb_val;
+                                    if selected {
+                                        self.add_widgets.selected_lights.insert(id.clone());
+                                    } else {
+                                        self.add_widgets.selected_lights.remove(id);
+                                    }
+                                }
+                                child_ui.label(&light.name);
                             }
                         }
-                    }
-                });
+
+                        ui.add_space(10.0);
+                        ui.heading("Groups");
+                        for (id, group) in sorted_groups {
+                            if !group.name.to_lowercase().contains(&query) {
+                                continue;
+                            }
+                            let added = current_layout_ids.contains(id);
+                            let row_w = ui.available_width();
+                            let (rect, response) = ui.allocate_exact_size(egui::vec2(row_w, 32.0), egui::Sense::click());
+                            
+                            if added {
+                                let visuals = ui.style().visuals.widgets.noninteractive;
+                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                child_ui.add_space(8.0);
+                                let mut val = true;
+                                child_ui.add_enabled(false, egui::Checkbox::new(&mut val, ""));
+                                child_ui.colored_label(visuals.text_color(), format!("{} (added)", group.name));
+                            } else {
+                                let mut selected = self.add_widgets.selected_groups.contains(id);
+                                
+                                if response.clicked() {
+                                    selected = !selected;
+                                    if selected {
+                                        self.add_widgets.selected_groups.insert(id.clone());
+                                    } else {
+                                        self.add_widgets.selected_groups.remove(id);
+                                    }
+                                }
+                                
+                                let bg_fill = if response.hovered() {
+                                    egui::Color32::from_rgba_unmultiplied(168, 85, 247, 25)
+                                } else if selected {
+                                    egui::Color32::from_rgba_unmultiplied(168, 85, 247, 15)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                if bg_fill != egui::Color32::TRANSPARENT {
+                                    ui.painter().rect_filled(rect, 4.0, bg_fill);
+                                }
+                                
+                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                child_ui.add_space(8.0);
+                                let mut cb_val = selected;
+                                if child_ui.checkbox(&mut cb_val, "").changed() {
+                                    selected = cb_val;
+                                    if selected {
+                                        self.add_widgets.selected_groups.insert(id.clone());
+                                    } else {
+                                        self.add_widgets.selected_groups.remove(id);
+                                    }
+                                }
+                                child_ui.label(&group.name);
+                            }
+                        }
+                    });
 
                 ui.add_space(15.0);
 
                 ui.horizontal(|ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(16.0, 10.0);
+
+                    if ui.button("Cancel").clicked() {
+                        self.add_widgets.is_open = false;
+                    }
+
                     if ui.button("Add Selected").clicked() {
                         for id in &self.add_widgets.selected_lights {
                             self.config.dashboard_layout.push(DashboardItem {
@@ -1342,10 +1529,6 @@ impl HueMIDItyApp {
                         }
                         self.config.save().ok();
                         self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-                        self.add_widgets.is_open = false;
-                    }
-
-                    if ui.button("Cancel").clicked() {
                         self.add_widgets.is_open = false;
                     }
                 });

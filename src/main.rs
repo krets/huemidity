@@ -109,7 +109,7 @@ async fn run_bg_worker(
 
     // Intervals
     let mut pairing_interval = tokio::time::interval(Duration::from_secs(1));
-    let mut refresh_interval = tokio::time::interval(Duration::from_secs(10));
+    let mut refresh_interval = tokio::time::interval(Duration::from_secs(30));
     let mut throttle_interval = tokio::time::interval(Duration::from_millis(20));
 
     loop {
@@ -197,8 +197,11 @@ async fn run_bg_worker(
                         let client = hue_client.clone();
                         let ip_clone = ip.clone();
                         let username_clone = username.clone();
+                        let bg_tx_self_clone = bg_tx_self.clone();
                         tokio::spawn(async move {
-                            client.set_light_state(&ip_clone, &username_clone, &light_id, &state).await.ok();
+                            if client.set_light_state(&ip_clone, &username_clone, &light_id, &state).await.is_ok() {
+                                bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                            }
                         });
                     }
 
@@ -221,8 +224,11 @@ async fn run_bg_worker(
                         let client = hue_client.clone();
                         let ip_clone = ip.clone();
                         let username_clone = username.clone();
+                        let bg_tx_self_clone = bg_tx_self.clone();
                         tokio::spawn(async move {
-                            client.set_group_action(&ip_clone, &username_clone, &group_id, &action).await.ok();
+                            if client.set_group_action(&ip_clone, &username_clone, &group_id, &action).await.is_ok() {
+                                bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                            }
                         });
                     }
                 }
@@ -355,8 +361,11 @@ async fn run_bg_worker(
                             let client = hue_client.clone();
                             let ip_clone = ip.clone();
                             let username_clone = username.clone();
+                            let bg_tx_self_clone = bg_tx_self.clone();
                             tokio::spawn(async move {
-                                client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.ok();
+                                if client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.is_ok() {
+                                    bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                                }
                             });
                         }
                     }
@@ -485,8 +494,11 @@ async fn run_bg_worker(
                                                 let client = hue_client.clone();
                                                 let ip_clone = ip.clone();
                                                 let username_clone = username.clone();
+                                                let bg_tx_self_clone = bg_tx_self.clone();
                                                 tokio::spawn(async move {
-                                                    client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.ok();
+                                                    if client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.is_ok() {
+                                                        bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                                                    }
                                                 });
                                             }
                                             continue;
