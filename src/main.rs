@@ -59,6 +59,16 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (h, s, v)
 }
 
+fn merge_json_objects(a: &mut serde_json::Value, b: serde_json::Value) {
+    if let (Some(a_obj), Some(b_obj)) = (a.as_object_mut(), b.as_object()) {
+        for (k, v) in b_obj {
+            a_obj.insert(k.clone(), v.clone());
+        }
+    } else {
+        *a = b;
+    }
+}
+
 // Background manager task
 #[allow(unused_variables, unused_assignments)]
 async fn run_bg_worker(
@@ -74,6 +84,13 @@ async fn run_bg_worker(
     // Cache of devices to perform toggles and HSB mappings
     let mut lights_cache = HashMap::new();
     let mut groups_cache = HashMap::new();
+    let mut scenes_cache = HashMap::new();
+
+    // Throttling maps
+    let mut pending_lights: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut pending_groups: HashMap<String, serde_json::Value> = HashMap::new();
+    let mut last_light_sent: HashMap<String, std::time::Instant> = HashMap::new();
+    let mut last_group_sent: HashMap<String, std::time::Instant> = HashMap::new();
 
     // Check if we need to search or poll
     let mut connection_state = if !config.bridge_ip.is_empty() && !config.bridge_username.is_empty() {
@@ -91,8 +108,9 @@ async fn run_bg_worker(
     };
 
     // Intervals
-    let mut pairing_interval = tokio::time::interval(Duration::from_secs(3));
+    let mut pairing_interval = tokio::time::interval(Duration::from_secs(1));
     let mut refresh_interval = tokio::time::interval(Duration::from_secs(10));
+    let mut throttle_interval = tokio::time::interval(Duration::from_millis(20));
 
     loop {
         tokio::select! {
@@ -100,26 +118,32 @@ async fn run_bg_worker(
             _ = pairing_interval.tick() => {
                 if let BridgeConnectionState::NeedsLink { ip, mut countdown } = connection_state.clone() {
                     if countdown > 0 {
-                        countdown -= 3;
-                        match hue_client.register_app(&ip).await {
-                            Ok(Some(username)) => {
-                                connection_state = BridgeConnectionState::Connected { ip: ip.clone(), username: username.clone() };
-                                config.bridge_ip = ip;
-                                config.bridge_username = username;
-                                config.save().ok();
-                                gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
-                                ctx.request_repaint();
+                        countdown -= 1;
+                        if countdown % 3 == 0 {
+                            match hue_client.register_app(&ip).await {
+                                Ok(Some(username)) => {
+                                    connection_state = BridgeConnectionState::Connected { ip: ip.clone(), username: username.clone() };
+                                    config.bridge_ip = ip;
+                                    config.bridge_username = username;
+                                    config.save().ok();
+                                    gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
+                                    ctx.request_repaint();
+                                }
+                                Ok(None) => {
+                                    connection_state = BridgeConnectionState::NeedsLink { ip, countdown };
+                                    gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
+                                    ctx.request_repaint();
+                                }
+                                Err(e) => {
+                                    connection_state = BridgeConnectionState::Error(e.to_string());
+                                    gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
+                                    ctx.request_repaint();
+                                }
                             }
-                            Ok(None) => {
-                                connection_state = BridgeConnectionState::NeedsLink { ip, countdown };
-                                gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
-                                ctx.request_repaint();
-                            }
-                            Err(e) => {
-                                connection_state = BridgeConnectionState::Error(e.to_string());
-                                gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
-                                ctx.request_repaint();
-                            }
+                        } else {
+                            connection_state = BridgeConnectionState::NeedsLink { ip, countdown };
+                            gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
+                            ctx.request_repaint();
                         }
                     } else {
                         connection_state = BridgeConnectionState::Idle;
@@ -136,6 +160,70 @@ async fn run_bg_worker(
                     }
                     if let Ok(g) = hue_client.fetch_groups(ip, username).await {
                         groups_cache = g.clone();
+                    }
+                    if let Ok(s) = hue_client.fetch_scenes(ip, username).await {
+                        scenes_cache = s.clone();
+                    }
+                    // Keep GUI in sync
+                    gui_tx.send(GuiMessage::DevicesRefreshed {
+                        lights: lights_cache.clone(),
+                        groups: groups_cache.clone(),
+                        scenes: scenes_cache.clone(),
+                    }).ok();
+                    ctx.request_repaint();
+                }
+            }
+
+            _ = throttle_interval.tick() => {
+                if let BridgeConnectionState::Connected { ip, username } = &connection_state {
+                    let now = std::time::Instant::now();
+                    
+                    // 1. Process pending lights
+                    let mut lights_to_send = Vec::new();
+                    for (light_id, state) in &pending_lights {
+                        let last_sent = last_light_sent.get(light_id);
+                        let can_send = match last_sent {
+                            Some(&instant) => now.duration_since(instant) >= Duration::from_millis(100),
+                            None => true,
+                        };
+                        if can_send {
+                            lights_to_send.push((light_id.clone(), state.clone()));
+                        }
+                    }
+                    for (light_id, state) in lights_to_send {
+                        pending_lights.remove(&light_id);
+                        last_light_sent.insert(light_id.clone(), now);
+                        
+                        let client = hue_client.clone();
+                        let ip_clone = ip.clone();
+                        let username_clone = username.clone();
+                        tokio::spawn(async move {
+                            client.set_light_state(&ip_clone, &username_clone, &light_id, &state).await.ok();
+                        });
+                    }
+
+                    // 2. Process pending groups
+                    let mut groups_to_send = Vec::new();
+                    for (group_id, action) in &pending_groups {
+                        let last_sent = last_group_sent.get(group_id);
+                        let can_send = match last_sent {
+                            Some(&instant) => now.duration_since(instant) >= Duration::from_millis(500),
+                            None => true,
+                        };
+                        if can_send {
+                            groups_to_send.push((group_id.clone(), action.clone()));
+                        }
+                    }
+                    for (group_id, action) in groups_to_send {
+                        pending_groups.remove(&group_id);
+                        last_group_sent.insert(group_id.clone(), now);
+                        
+                        let client = hue_client.clone();
+                        let ip_clone = ip.clone();
+                        let username_clone = username.clone();
+                        tokio::spawn(async move {
+                            client.set_group_action(&ip_clone, &username_clone, &group_id, &action).await.ok();
+                        });
                     }
                 }
             }
@@ -184,6 +272,10 @@ async fn run_bg_worker(
                         config.bridge_ip.clear();
                         config.bridge_username.clear();
                         config.save().ok();
+                        pending_lights.clear();
+                        pending_groups.clear();
+                        last_light_sent.clear();
+                        last_group_sent.clear();
                         gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
                         ctx.request_repaint();
                     }
@@ -196,6 +288,7 @@ async fn run_bg_worker(
 
                             lights_cache = lights.clone();
                             groups_cache = groups.clone();
+                            scenes_cache = scenes.clone();
 
                             gui_tx.send(GuiMessage::DevicesRefreshed { lights, groups, scenes }).ok();
                             ctx.request_repaint();
@@ -203,39 +296,68 @@ async fn run_bg_worker(
                     }
 
                     BgMessage::SetLightState { light_id, state } => {
-                        if let BridgeConnectionState::Connected { ip, username } = &connection_state {
-                            hue_client.set_light_state(ip, username, &light_id, &state).await.ok();
-                            // Update local cache
-                            if let Some(light) = lights_cache.get_mut(&light_id) {
-                                if let Some(on) = state.get("on").and_then(|o| o.as_bool()) {
-                                    light.state.on = Some(on);
-                                }
-                                if let Some(bri) = state.get("bri").and_then(|b| b.as_u64()) {
-                                    light.state.bri = Some(bri as u8);
-                                }
+                        // Update local cache
+                        if let Some(light) = lights_cache.get_mut(&light_id) {
+                            if let Some(on) = state.get("on").and_then(|o| o.as_bool()) {
+                                light.state.on = Some(on);
                             }
+                            if let Some(bri) = state.get("bri").and_then(|b| b.as_u64()) {
+                                light.state.bri = Some(bri as u8);
+                            }
+                            if let Some(hue) = state.get("hue").and_then(|h| h.as_u64()) {
+                                light.state.hue = Some(hue as u16);
+                            }
+                            if let Some(sat) = state.get("sat").and_then(|s| s.as_u64()) {
+                                light.state.sat = Some(sat as u8);
+                            }
+                            if let Some(ct) = state.get("ct").and_then(|c| c.as_u64()) {
+                                light.state.ct = Some(ct as u16);
+                            }
+                        }
+                        // Queue for rate-limited dispatch
+                        if let Some(existing) = pending_lights.get_mut(&light_id) {
+                            merge_json_objects(existing, state);
+                        } else {
+                            pending_lights.insert(light_id.clone(), state);
                         }
                     }
 
                     BgMessage::SetGroupAction { group_id, action } => {
-                        if let BridgeConnectionState::Connected { ip, username } = &connection_state {
-                            hue_client.set_group_action(ip, username, &group_id, &action).await.ok();
-                            // Update local cache
-                            if let Some(group) = groups_cache.get_mut(&group_id) {
-                                if let Some(on) = action.get("on").and_then(|o| o.as_bool()) {
-                                    group.action.on = Some(on);
-                                }
-                                if let Some(bri) = action.get("bri").and_then(|b| b.as_u64()) {
-                                    group.action.bri = Some(bri as u8);
-                                }
+                        // Update local cache
+                        if let Some(group) = groups_cache.get_mut(&group_id) {
+                            if let Some(on) = action.get("on").and_then(|o| o.as_bool()) {
+                                group.action.on = Some(on);
                             }
+                            if let Some(bri) = action.get("bri").and_then(|b| b.as_u64()) {
+                                group.action.bri = Some(bri as u8);
+                            }
+                            if let Some(hue) = action.get("hue").and_then(|h| h.as_u64()) {
+                                group.action.hue = Some(hue as u16);
+                            }
+                            if let Some(sat) = action.get("sat").and_then(|s| s.as_u64()) {
+                                group.action.sat = Some(sat as u8);
+                            }
+                            if let Some(ct) = action.get("ct").and_then(|c| c.as_u64()) {
+                                group.action.ct = Some(ct as u16);
+                            }
+                        }
+                        // Queue for rate-limited dispatch
+                        if let Some(existing) = pending_groups.get_mut(&group_id) {
+                            merge_json_objects(existing, action);
+                        } else {
+                            pending_groups.insert(group_id.clone(), action);
                         }
                     }
 
                     BgMessage::RecallScene { group_id, scene_id } => {
                         if let BridgeConnectionState::Connected { ip, username } = &connection_state {
                             let body = serde_json::json!({ "scene": scene_id });
-                            hue_client.set_group_action(ip, username, &group_id, &body).await.ok();
+                            let client = hue_client.clone();
+                            let ip_clone = ip.clone();
+                            let username_clone = username.clone();
+                            tokio::spawn(async move {
+                                client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.ok();
+                            });
                         }
                     }
 
@@ -249,13 +371,18 @@ async fn run_bg_worker(
                                 active_listener = Some(listener);
                                 config.selected_device = port_name.clone();
                                 config.save().ok();
-                                gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok(); // Trigger refresh
+                                gui_tx.send(GuiMessage::MidiStatus("Live Input: Active".to_string())).ok();
                             }
                             Err(e) => {
+                                gui_tx.send(GuiMessage::MidiStatus(format!("Conflict: Device Busy"))).ok();
                                 gui_tx.send(GuiMessage::Error(e.to_string())).ok();
                             }
                         }
                         ctx.request_repaint();
+                    }
+
+                    BgMessage::UpdateConfig(new_config) => {
+                        config = new_config;
                     }
 
                     BgMessage::MidiInputReceived(event) => {
@@ -279,9 +406,13 @@ async fn run_bg_worker(
                                             if mapping.invert {
                                                 bri = 254 - bri;
                                             }
-                                            state_body["bri"] = serde_json::json!(bri);
-                                            if mapping.auto_on {
-                                                state_body["on"] = serde_json::json!(true);
+                                            if bri == 0 {
+                                                state_body["on"] = serde_json::json!(false);
+                                            } else {
+                                                state_body["bri"] = serde_json::json!(bri);
+                                                if mapping.auto_on {
+                                                    state_body["on"] = serde_json::json!(true);
+                                                }
                                             }
                                         }
                                         "Hue" => {
@@ -351,7 +482,12 @@ async fn run_bg_worker(
                                                 let body = serde_json::json!({ "scene": mapping.target_id });
                                                 // Scenes require group ID, fallback to Group 0 (all lights) if scene target doesn't specify a group
                                                 let group_id = "0".to_string();
-                                                hue_client.set_group_action(ip, username, &group_id, &body).await.ok();
+                                                let client = hue_client.clone();
+                                                let ip_clone = ip.clone();
+                                                let username_clone = username.clone();
+                                                tokio::spawn(async move {
+                                                    client.set_group_action(&ip_clone, &username_clone, &group_id, &body).await.ok();
+                                                });
                                             }
                                             continue;
                                         }
@@ -400,9 +536,69 @@ async fn run_bg_worker(
                                     // Dispatch Hue command
                                     if !state_body.as_object().unwrap().is_empty() {
                                         if mapping.target_type == "light" {
-                                            hue_client.set_light_state(ip, username, &mapping.target_id, &state_body).await.ok();
+                                            // 1. Update cache immediately
+                                            if let Some(light) = lights_cache.get_mut(&mapping.target_id) {
+                                                if let Some(on) = state_body.get("on").and_then(|o| o.as_bool()) {
+                                                    light.state.on = Some(on);
+                                                }
+                                                if let Some(bri) = state_body.get("bri").and_then(|b| b.as_u64()) {
+                                                    light.state.bri = Some(bri as u8);
+                                                }
+                                                if let Some(hue) = state_body.get("hue").and_then(|h| h.as_u64()) {
+                                                    light.state.hue = Some(hue as u16);
+                                                }
+                                                if let Some(sat) = state_body.get("sat").and_then(|s| s.as_u64()) {
+                                                    light.state.sat = Some(sat as u8);
+                                                }
+                                                if let Some(ct) = state_body.get("ct").and_then(|c| c.as_u64()) {
+                                                    light.state.ct = Some(ct as u16);
+                                                }
+                                            }
+                                            // 2. Queue for sending
+                                            if let Some(existing) = pending_lights.get_mut(&mapping.target_id) {
+                                                merge_json_objects(existing, state_body);
+                                            } else {
+                                                pending_lights.insert(mapping.target_id.clone(), state_body);
+                                            }
+                                            // 3. Broadcast to GUI immediately
+                                            gui_tx.send(GuiMessage::DevicesRefreshed {
+                                                lights: lights_cache.clone(),
+                                                groups: groups_cache.clone(),
+                                                scenes: scenes_cache.clone(),
+                                            }).ok();
+                                            ctx.request_repaint();
                                         } else if mapping.target_type == "group" {
-                                            hue_client.set_group_action(ip, username, &mapping.target_id, &state_body).await.ok();
+                                            // 1. Update cache immediately
+                                            if let Some(group) = groups_cache.get_mut(&mapping.target_id) {
+                                                if let Some(on) = state_body.get("on").and_then(|o| o.as_bool()) {
+                                                    group.action.on = Some(on);
+                                                }
+                                                if let Some(bri) = state_body.get("bri").and_then(|b| b.as_u64()) {
+                                                    group.action.bri = Some(bri as u8);
+                                                }
+                                                if let Some(hue) = state_body.get("hue").and_then(|h| h.as_u64()) {
+                                                    group.action.hue = Some(hue as u16);
+                                                }
+                                                if let Some(sat) = state_body.get("sat").and_then(|s| s.as_u64()) {
+                                                    group.action.sat = Some(sat as u8);
+                                                }
+                                                if let Some(ct) = state_body.get("ct").and_then(|c| c.as_u64()) {
+                                                    group.action.ct = Some(ct as u16);
+                                                }
+                                            }
+                                            // 2. Queue for sending
+                                            if let Some(existing) = pending_groups.get_mut(&mapping.target_id) {
+                                                merge_json_objects(existing, state_body);
+                                            } else {
+                                                pending_groups.insert(mapping.target_id.clone(), state_body);
+                                            }
+                                            // 3. Broadcast to GUI immediately
+                                            gui_tx.send(GuiMessage::DevicesRefreshed {
+                                                lights: lights_cache.clone(),
+                                                groups: groups_cache.clone(),
+                                                scenes: scenes_cache.clone(),
+                                            }).ok();
+                                            ctx.request_repaint();
                                         }
                                     }
                                 }

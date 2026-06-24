@@ -30,6 +30,83 @@ pub fn setup_custom_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
+fn toggle_ui(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let desired_size = ui.spacing().interact_size.y * egui::vec2(2.0, 1.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, *on, ""));
+
+    if ui.is_rect_visible(rect) {
+        let how_on = ui.ctx().animate_bool(response.id, *on);
+        let visuals = ui.style().interact_selectable(&response, *on);
+        let rect = rect.expand(visuals.expansion);
+        let radius = 0.5 * rect.height();
+        
+        let bg_fill = if *on {
+            egui::Color32::from_rgb(168, 85, 247)
+        } else {
+            egui::Color32::from_rgb(55, 65, 81)
+        };
+        ui.painter().rect_filled(rect, radius, bg_fill);
+        
+        let circle_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+        let center = egui::pos2(circle_x, rect.center().y);
+        ui.painter().circle(
+            center,
+            0.75 * radius,
+            egui::Color32::WHITE,
+            visuals.fg_stroke,
+        );
+    }
+    response
+}
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
+    let m = v - c;
+
+    let (r_prime, g_prime, b_prime) = if h >= 0.0 && h < 60.0 {
+        (c, x, 0.0)
+    } else if h >= 60.0 && h < 120.0 {
+        (x, c, 0.0)
+    } else if h >= 120.0 && h < 180.0 {
+        (0.0, c, x)
+    } else if h >= 180.0 && h < 240.0 {
+        (0.0, x, c)
+    } else if h >= 240.0 && h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    (r_prime + m, g_prime + m, b_prime + m)
+}
+
+fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let c_max = r.max(g).max(b);
+    let c_min = r.min(g).min(b);
+    let delta = c_max - c_min;
+
+    let h = if delta == 0.0 {
+        0.0
+    } else if c_max == r {
+        60.0 * (((g - b) / delta).rem_euclid(6.0))
+    } else if c_max == g {
+        60.0 * (((b - r) / delta) + 2.0)
+    } else {
+        60.0 * (((r - g) / delta) + 4.0)
+    };
+
+    let s = if c_max == 0.0 { 0.0 } else { delta / c_max };
+    let v = c_max;
+
+    (h, s, v)
+}
+
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -38,6 +115,7 @@ use tokio::sync::mpsc::{UnboundedSender as Sender, UnboundedReceiver as Receiver
 #[derive(Clone, Debug)]
 pub enum GuiMessage {
     MidiActivity(MidiEvent),
+    MidiStatus(String),
     HueConnectionState(BridgeConnectionState),
     DevicesRefreshed {
         lights: HashMap<String, Light>,
@@ -67,6 +145,7 @@ pub enum BgMessage {
     },
     ChangeMidiPort(String),
     MidiInputReceived(MidiEvent),
+    UpdateConfig(AppConfig),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -196,8 +275,10 @@ impl HueMIDItyApp {
         }
     }
 
-    fn check_channels(&mut self) {
+    fn check_channels(&mut self, ctx: &egui::Context) {
+        let mut got_msg = false;
         while let Ok(msg) = self.gui_rx.try_recv() {
+            got_msg = true;
             match msg {
                 GuiMessage::MidiActivity(event) => {
                     // Update log (keep last 10 entries)
@@ -212,6 +293,9 @@ impl HueMIDItyApp {
                     }
                     self.midi_status = "Live Input: Active".to_string();
                 }
+                GuiMessage::MidiStatus(status) => {
+                    self.midi_status = status;
+                }
                 GuiMessage::HueConnectionState(state) => {
                     self.connection_state = state.clone();
                     match &state {
@@ -219,6 +303,7 @@ impl HueMIDItyApp {
                             self.config.bridge_ip = ip.clone();
                             self.config.bridge_username = username.clone();
                             self.config.save().ok();
+                            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                             self.bg_tx.send(BgMessage::RefreshDevices).ok();
                         }
                         BridgeConnectionState::Idle => {
@@ -238,6 +323,9 @@ impl HueMIDItyApp {
                     self.midi_status = format!("Conflict: {}", err_msg);
                 }
             }
+        }
+        if got_msg {
+            ctx.request_repaint();
         }
     }
 
@@ -424,11 +512,13 @@ impl HueMIDItyApp {
                     for (idx, item) in layout_items.iter().enumerate() {
                         let card_response = egui::Frame::window(ui.style())
                             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
+                            .inner_margin(egui::Margin { left: 0, right: 0, top: 12, bottom: 0 })
                             .show(ui, |ui| {
                                 ui.set_min_size(egui::vec2(220.0, 110.0));
                                 ui.vertical(|ui| {
                                     // Header of card
                                     ui.horizontal(|ui| {
+                                        ui.add_space(12.0);
                                         let drag_handle = ui.label("⠿");
                                         let drag_response = ui.interact(
                                             drag_handle.rect,
@@ -455,6 +545,7 @@ impl HueMIDItyApp {
                                         ui.heading(egui::RichText::new(&name).size(14.0).strong());
                                         
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.add_space(12.0);
                                             if ui.button("×").clicked() {
                                                 remove_index = Some(idx);
                                             }
@@ -465,67 +556,206 @@ impl HueMIDItyApp {
 
                                     // Display controls depending on light or group
                                     if item.r#type == "light" {
-                                        if let Some(light) = self.lights.get(&item.id) {
-                                            let mut is_on = light.state.on.unwrap_or(false);
-                                            if ui.checkbox(&mut is_on, "Power").changed() {
-                                                self.bg_tx.send(BgMessage::SetLightState {
-                                                    light_id: item.id.clone(),
-                                                    state: serde_json::json!({ "on": is_on }),
-                                                }).ok();
-                                            }
-
-                                            // Brightness Slider
-                                            if light.state.bri.is_some() {
-                                                let mut bri = light.state.bri.unwrap_or(0);
-                                                if ui.add(egui::Slider::new(&mut bri, 0..=254).text("Brightness")).changed() {
+                                        if let Some(light) = self.lights.get_mut(&item.id) {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(12.0);
+                                                // Toggle switch on the left
+                                                let mut is_on = light.state.on.unwrap_or(false);
+                                                if toggle_ui(ui, &mut is_on).changed() {
+                                                    light.state.on = Some(is_on);
                                                     self.bg_tx.send(BgMessage::SetLightState {
                                                         light_id: item.id.clone(),
-                                                        state: serde_json::json!({ "bri": bri }),
+                                                        state: serde_json::json!({ "on": is_on }),
+                                                    }).ok();
+                                                }
+
+                                                // Colorswatch right-aligned
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    ui.add_space(12.0);
+                                                    if light.capabilities().contains(&Capability::Color) {
+                                                        let h = light.state.hue.unwrap_or(0) as f32 / 65535.0 * 360.0;
+                                                        let s = light.state.sat.unwrap_or(0) as f32 / 254.0;
+                                                        let v = light.state.bri.unwrap_or(254) as f32 / 254.0;
+                                                        let (r_val, g_val, b_val) = hsv_to_rgb(h, s, v);
+                                                        let mut color = egui::Color32::from_rgb((r_val * 255.0) as u8, (g_val * 255.0) as u8, (b_val * 255.0) as u8);
+
+                                                        if ui.color_edit_button_srgba(&mut color).changed() {
+                                                            let (new_h, new_s, new_v) = rgb_to_hsv(color.r() as f32 / 255.0, color.g() as f32 / 255.0, color.b() as f32 / 255.0);
+                                                            let hue = (new_h / 360.0 * 65535.0) as u16;
+                                                            let sat = (new_s * 254.0) as u8;
+                                                            let bri = (new_v * 254.0) as u8;
+
+                                                            light.state.hue = Some(hue);
+                                                            light.state.sat = Some(sat);
+                                                            light.state.bri = Some(bri);
+                                                            light.state.on = Some(bri > 0);
+
+                                                            let mut state = serde_json::json!({
+                                                                "on": bri > 0,
+                                                                "hue": hue,
+                                                                "sat": sat,
+                                                                "bri": bri
+                                                            });
+                                                            if bri == 0 {
+                                                                state = serde_json::json!({ "on": false });
+                                                            }
+
+                                                            self.bg_tx.send(BgMessage::SetLightState {
+                                                                light_id: item.id.clone(),
+                                                                state,
+                                                            }).ok();
+                                                        }
+                                                    }
+                                                });
+                                            });
+
+                                            ui.add_space(8.0);
+
+                                            // Full-width Brightness Slider without name/value text (0 turns OFF)
+                                            if light.state.bri.is_some() {
+                                                let mut bri = light.state.bri.unwrap_or(0);
+                                                let slider_res = ui.add_sized(
+                                                    egui::vec2(ui.available_width(), 16.0),
+                                                    egui::Slider::new(&mut bri, 0..=254).show_value(false),
+                                                );
+                                                if slider_res.changed() {
+                                                    let is_on = bri > 0;
+                                                    light.state.bri = Some(bri);
+                                                    light.state.on = Some(is_on);
+                                                    
+                                                    let mut state = serde_json::json!({ "bri": bri, "on": is_on });
+                                                    if bri == 0 {
+                                                        state = serde_json::json!({ "on": false });
+                                                    }
+                                                    self.bg_tx.send(BgMessage::SetLightState {
+                                                        light_id: item.id.clone(),
+                                                        state,
                                                     }).ok();
                                                 }
                                             }
                                         } else {
-                                            ui.colored_label(egui::Color32::from_rgb(120, 120, 120), "Offline");
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(12.0);
+                                                ui.colored_label(egui::Color32::from_rgb(120, 120, 120), "Offline");
+                                            });
                                         }
                                     } else if item.r#type == "group" {
-                                        if let Some(group) = self.groups.get(&item.id) {
-                                            let mut is_on = group.action.on.unwrap_or(false);
-                                            if ui.checkbox(&mut is_on, "Power").changed() {
-                                                self.bg_tx.send(BgMessage::SetGroupAction {
-                                                    group_id: item.id.clone(),
-                                                    action: serde_json::json!({ "on": is_on }),
-                                                }).ok();
-                                            }
-
-                                            // Brightness
-                                            if group.action.bri.is_some() {
-                                                let mut bri = group.action.bri.unwrap_or(0);
-                                                if ui.add(egui::Slider::new(&mut bri, 0..=254).text("Brightness")).changed() {
+                                        if let Some(group) = self.groups.get_mut(&item.id) {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(12.0);
+                                                // Toggle switch on the left
+                                                let mut is_on = group.action.on.unwrap_or(false);
+                                                if toggle_ui(ui, &mut is_on).changed() {
+                                                    group.action.on = Some(is_on);
                                                     self.bg_tx.send(BgMessage::SetGroupAction {
                                                         group_id: item.id.clone(),
-                                                        action: serde_json::json!({ "bri": bri }),
+                                                        action: serde_json::json!({ "on": is_on }),
+                                                    }).ok();
+                                                }
+
+                                                // Colorswatch right-aligned
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    ui.add_space(12.0);
+                                                    let mut group_supports_color = false;
+                                                    for light_id in &group.lights {
+                                                        if let Some(l) = self.lights.get(light_id) {
+                                                            if l.capabilities().contains(&Capability::Color) {
+                                                                group_supports_color = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    if group_supports_color {
+                                                        let h = group.action.hue.unwrap_or(0) as f32 / 65535.0 * 360.0;
+                                                        let s = group.action.sat.unwrap_or(0) as f32 / 254.0;
+                                                        let v = group.action.bri.unwrap_or(254) as f32 / 254.0;
+                                                        let (r_val, g_val, b_val) = hsv_to_rgb(h, s, v);
+                                                        let mut color = egui::Color32::from_rgb((r_val * 255.0) as u8, (g_val * 255.0) as u8, (b_val * 255.0) as u8);
+
+                                                        if ui.color_edit_button_srgba(&mut color).changed() {
+                                                            let (new_h, new_s, new_v) = rgb_to_hsv(color.r() as f32 / 255.0, color.g() as f32 / 255.0, color.b() as f32 / 255.0);
+                                                            let hue = (new_h / 360.0 * 65535.0) as u16;
+                                                            let sat = (new_s * 254.0) as u8;
+                                                            let bri = (new_v * 254.0) as u8;
+
+                                                            group.action.hue = Some(hue);
+                                                            group.action.sat = Some(sat);
+                                                            group.action.bri = Some(bri);
+                                                            group.action.on = Some(bri > 0);
+
+                                                            let mut action = serde_json::json!({
+                                                                "on": bri > 0,
+                                                                "hue": hue,
+                                                                "sat": sat,
+                                                                "bri": bri
+                                                            });
+                                                            if bri == 0 {
+                                                                action = serde_json::json!({ "on": false });
+                                                            }
+
+                                                            self.bg_tx.send(BgMessage::SetGroupAction {
+                                                                group_id: item.id.clone(),
+                                                                action,
+                                                            }).ok();
+                                                        }
+                                                    }
+                                                });
+                                            });
+
+                                            ui.add_space(8.0);
+
+                                            // Full-width Brightness Slider without name/value text (0 turns OFF)
+                                            if group.action.bri.is_some() {
+                                                let mut bri = group.action.bri.unwrap_or(0);
+                                                let slider_res = ui.add_sized(
+                                                    egui::vec2(ui.available_width(), 16.0),
+                                                    egui::Slider::new(&mut bri, 0..=254).show_value(false),
+                                                );
+                                                if slider_res.changed() {
+                                                    let is_on = bri > 0;
+                                                    group.action.bri = Some(bri);
+                                                    group.action.on = Some(is_on);
+                                                    
+                                                    let mut action = serde_json::json!({ "bri": bri, "on": is_on });
+                                                    if bri == 0 {
+                                                        action = serde_json::json!({ "on": false });
+                                                    }
+                                                    self.bg_tx.send(BgMessage::SetGroupAction {
+                                                        group_id: item.id.clone(),
+                                                        action,
                                                     }).ok();
                                                 }
                                             }
                                         } else {
-                                            ui.label("Unknown Group");
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(12.0);
+                                                ui.label("Unknown Group");
+                                            });
                                         }
                                     }
                                 });
                             });
 
                         // Mouse wheel adjustments over card
-                        if card_response.response.hovered() {
+                        let card_rect = card_response.response.rect;
+                        if ui.rect_contains_pointer(card_rect) {
                             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                             if scroll.abs() > 0.0 {
                                 let diff = if scroll > 0.0 { 15i16 } else { -15i16 };
                                 if item.r#type == "light" {
-                                    if let Some(light) = self.lights.get(&item.id) {
+                                    if let Some(light) = self.lights.get_mut(&item.id) {
                                         let current_bri = light.state.bri.unwrap_or(0) as i16;
                                         let new_bri = (current_bri + diff).clamp(0, 254) as u8;
+                                        light.state.bri = Some(new_bri);
                                         let mut state = serde_json::json!({ "bri": new_bri });
                                         if !light.state.on.unwrap_or(false) && scroll > 0.0 {
+                                            light.state.on = Some(true);
                                             state["on"] = serde_json::json!(true);
+                                        }
+                                        if new_bri == 0 {
+                                            light.state.on = Some(false);
+                                            state = serde_json::json!({ "on": false });
                                         }
                                         self.bg_tx.send(BgMessage::SetLightState {
                                             light_id: item.id.clone(),
@@ -533,12 +763,18 @@ impl HueMIDItyApp {
                                         }).ok();
                                     }
                                 } else if item.r#type == "group" {
-                                    if let Some(group) = self.groups.get(&item.id) {
+                                    if let Some(group) = self.groups.get_mut(&item.id) {
                                         let current_bri = group.action.bri.unwrap_or(0) as i16;
                                         let new_bri = (current_bri + diff).clamp(0, 254) as u8;
+                                        group.action.bri = Some(new_bri);
                                         let mut state = serde_json::json!({ "bri": new_bri });
                                         if !group.action.on.unwrap_or(false) && scroll > 0.0 {
+                                            group.action.on = Some(true);
                                             state["on"] = serde_json::json!(true);
+                                        }
+                                        if new_bri == 0 {
+                                            group.action.on = Some(false);
+                                            state = serde_json::json!({ "on": false });
                                         }
                                         self.bg_tx.send(BgMessage::SetGroupAction {
                                             group_id: item.id.clone(),
@@ -548,19 +784,21 @@ impl HueMIDItyApp {
                                 }
                             }
 
-                            // Double Click to Toggle
-                            if card_response.response.double_clicked() {
+                            // Double Click to Toggle using full card rectangle checks (without blocking click/drag of subwidgets)
+                            if ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
                                 if item.r#type == "light" {
-                                    if let Some(light) = self.lights.get(&item.id) {
+                                    if let Some(light) = self.lights.get_mut(&item.id) {
                                         let next_state = !light.state.on.unwrap_or(false);
+                                        light.state.on = Some(next_state);
                                         self.bg_tx.send(BgMessage::SetLightState {
                                             light_id: item.id.clone(),
                                             state: serde_json::json!({ "on": next_state }),
                                         }).ok();
                                     }
                                 } else if item.r#type == "group" {
-                                    if let Some(group) = self.groups.get(&item.id) {
+                                    if let Some(group) = self.groups.get_mut(&item.id) {
                                         let next_state = !group.action.on.unwrap_or(false);
+                                        group.action.on = Some(next_state);
                                         self.bg_tx.send(BgMessage::SetGroupAction {
                                             group_id: item.id.clone(),
                                             action: serde_json::json!({ "on": next_state }),
@@ -618,6 +856,7 @@ impl HueMIDItyApp {
                 if current_port != self.config.selected_device {
                     self.config.selected_device = current_port.clone();
                     self.config.save().ok();
+                    self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                     self.bg_tx.send(BgMessage::ChangeMidiPort(current_port)).ok();
                     self.midi_status = "Connecting...".to_string();
                 }
@@ -730,6 +969,7 @@ impl HueMIDItyApp {
                     if let Some(maps) = self.config.mappings.get_mut(&selected_device) {
                         maps.remove(&key);
                         self.config.save().ok();
+                        self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                     }
                 }
 
@@ -780,6 +1020,7 @@ impl HueMIDItyApp {
         if ui.checkbox(&mut autostart, "Launch on Startup").changed() {
             self.config.autostart = autostart;
             self.config.save().ok();
+            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
             
             // Integrate auto-launch crate trigger here
             if let Some(path) = std::env::current_exe().ok() {
@@ -806,6 +1047,7 @@ impl HueMIDItyApp {
             self.config.bridge_ip.clear();
             self.config.bridge_username.clear();
             self.config.save().ok();
+            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
             self.connection_state = BridgeConnectionState::Idle;
         }
 
@@ -953,6 +1195,7 @@ impl HueMIDItyApp {
                                 auto_on: self.mapping_creator.auto_on,
                             });
                             self.config.save().ok();
+                            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                             self.mapping_creator.is_open = false;
                         }
                     }
@@ -1041,6 +1284,7 @@ impl HueMIDItyApp {
                             });
                         }
                         self.config.save().ok();
+                        self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                         self.add_widgets.is_open = false;
                     }
 
@@ -1054,7 +1298,7 @@ impl HueMIDItyApp {
 
 impl eframe::App for HueMIDItyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.check_channels();
+        self.check_channels(ctx);
 
         // System tray menu events handler
         while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
