@@ -39,6 +39,6 @@ echo.
 echo ==========================================
 echo Environment set up successfully!
 echo To run the application:
-echo .venv\Scripts\python.exe main.py
+echo .venv\Scripts\python.exe -m huemidity.main
 echo ==========================================
 pause

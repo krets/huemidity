@@ -6,15 +6,15 @@ import threading
 from unittest.mock import MagicMock
 
 # Import the modules we want to test
-from config import ConfigManager
-from bridge import HueRateLimiter
-from midi import MidiManager
+from huemidity.config import ConfigManager
+from huemidity.bridge import HueRateLimiter
+from huemidity.midi import MidiManager
 
 class TestHueMidity(unittest.TestCase):
     def setUp(self):
         # Create a clean test_config.json for testing
         self.test_dir = os.path.dirname(os.path.abspath(__file__))
-        self.config_path = os.path.join(self.test_dir, "test_config.json")
+        self.config_path = os.path.join(self.test_dir, "huemidity", "test_config.json")
         if os.path.exists(self.config_path):
             os.remove(self.config_path)
         self.config = ConfigManager(config_file="test_config.json")

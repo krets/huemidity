@@ -47,7 +47,7 @@ APP_NAME="HueMIDIty"
 
 # Create a temporary run script file
 cat <<EOF > run.applescript
-do shell script "cd \"$(pwd)\" && .venv/bin/python main.py > /dev/null 2>&1 &"
+do shell script "cd \"$(pwd)\" && .venv/bin/python -m huemidity.main > /dev/null 2>&1 &"
 EOF
 
 # Compile the AppleScript into a macOS Application Bundle

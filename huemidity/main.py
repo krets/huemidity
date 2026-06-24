@@ -6,9 +6,9 @@ import time
 import webview
 
 # Import our custom backend modules
-from config import ConfigManager
-from bridge import HueBridgeManager
-from midi import MidiManager
+from .config import ConfigManager
+from .bridge import HueBridgeManager
+from .midi import MidiManager
 
 # Constants & Globals
 LOCK_PORT = 55632
@@ -24,6 +24,9 @@ window_visible = True
 win_tray_icon = None
 mac_status_item = None
 mac_menu_actions = None
+
+if sys.platform == 'win32':
+    from .win32_tray import WindowsTrayIcon
 
 # 1. Single Instance Lock
 def acquire_single_instance_lock():
@@ -121,35 +124,35 @@ if sys.platform == 'darwin':
 def set_windows_window_icon(hwnd=None):
     try:
         import ctypes
-        from PIL import Image
+        user32 = ctypes.windll.user32
+        
+        # Define argtypes/restype for 64-bit pointer safety
+        user32.LoadImageW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+        user32.LoadImageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint64, ctypes.c_int64]
+        user32.SendMessageW.restype = ctypes.c_int64
         
         # 1. Find window handle by title
         if not hwnd:
-            hwnd = ctypes.windll.user32.FindWindowW(None, "HueMIDIty Dashboard")
+            hwnd = user32.FindWindowW(None, "HueMIDIty Dashboard")
         if not hwnd:
             return False
             
-        # 2. Save PIL image as a temp .ico file if it doesn't exist
-        icon_png_path = os.path.abspath(os.path.join("ui", "icon.png"))
-        temp_ico_path = os.path.abspath(os.path.join("ui", "temp_icon.ico"))
+        icon_ico_path = os.path.abspath(os.path.join("ui", "icon.ico"))
         
-        if os.path.exists(icon_png_path) and not os.path.exists(temp_ico_path):
-            img = Image.open(icon_png_path)
-            img.save(temp_ico_path, format='ICO', sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
-            
-        if os.path.exists(temp_ico_path):
+        if os.path.exists(icon_ico_path):
             # Load the icon and send WM_SETICON messages
-            hicon = ctypes.windll.user32.LoadImageW(
+            hicon = user32.LoadImageW(
                 None, 
-                temp_ico_path, 
+                icon_ico_path, 
                 1, # IMAGE_ICON
                 0, 0, 
                 0x00000010 | 0x00008000 # LR_LOADFROMFILE | LR_SHARED
             )
             if hicon:
                 # Send WM_SETICON (0x0080) for small (0) and big (1) window representations
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
-                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+                user32.SendMessageW(hwnd, 0x0080, 0, hicon)
+                user32.SendMessageW(hwnd, 0x0080, 1, hicon)
                 print("[Windows Icon] Window taskbar icon updated programmatically.")
                 return True
     except Exception as e:
@@ -215,19 +218,13 @@ def sync_autostart(enabled):
     except Exception as e:
         print(f"[Autostart] Error syncing autostart: {e}")
 
-# 4. Windows Tray Implementation using pystray
+# 4. Windows Tray Implementation using native ctypes
 def setup_windows_tray():
     global win_tray_icon
-    from PIL import Image
     
-    icon_path = os.path.join("ui", "icon.png")
-    try:
-        image = Image.open(icon_path)
-    except Exception as e:
-        print(f"[Windows Tray] Could not load icon image: {e}. Generating fallback...")
-        image = Image.new('RGB', (64, 64), color=(0, 240, 255))
-        
-    def on_toggle_clicked(icon, item):
+    icon_path = os.path.join("ui", "icon.ico")
+    
+    def on_toggle_clicked(icon=None, item=None):
         global window_visible
         if main_window:
             if window_visible:
@@ -237,28 +234,18 @@ def setup_windows_tray():
                 main_window.show()
                 window_visible = True
             
-    def on_quit_clicked(icon, item):
-        icon.stop()
+    def on_quit_clicked(icon=None, item=None):
+        if win_tray_icon:
+            win_tray_icon.stop()
         cleanup_and_exit()
         
-    import pystray
-    win_tray_icon = pystray.Icon(
+    win_tray_icon = WindowsTrayIcon(
+        icon_path, 
         "HueMIDIty", 
-        image, 
-        menu=pystray.Menu(
-            pystray.MenuItem(
-                "Show/Hide Dashboard", 
-                on_toggle_clicked,
-                default=True
-            ),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", on_quit_clicked)
-        )
+        on_toggle_clicked, 
+        on_quit_clicked
     )
-    
-    # Run in a background thread because webview starts on main thread
-    tray_thread = threading.Thread(target=win_tray_icon.run, daemon=True)
-    tray_thread.start()
+    win_tray_icon.start()
     print("[Windows Tray] System tray icon initialized.")
 
 # 5. JS-to-Python Webview API Bridge
