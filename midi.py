@@ -34,7 +34,8 @@ class MidiManager:
         with self.cache_lock:
             # Remove previous occurrences of this event key to move it to the top
             self.learn_cache = [e for e in self.learn_cache if e['key'] != event_key]
-            self.learn_cache.insert(0, {'key': event_key, 'value': value})
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            self.learn_cache.insert(0, {'key': event_key, 'value': value, 'time': timestamp})
             self.learn_cache = self.learn_cache[:10]
 
     def select_device(self, device_name):
@@ -164,8 +165,19 @@ class MidiManager:
         mapping = mappings[event_key]
         target_type = mapping.get('target_type')
         target_id = mapping.get('target_id')
+        if target_type == 'scene':
+            if '/' in target_id:
+                group_id, scene_id = target_id.split('/', 1)
+                is_press = False
+                if "Note" in event_key:
+                    is_press = (value > 0)
+                else:
+                    is_press = (value >= 64)
+                if is_press:
+                    self.hue_manager.set_scene(group_id, scene_id)
+            return
+
         action = mapping.get('action')
-        
         hue_value = None
         if action in ('Toggle On/Off', 'Toggle On/Off (Latch)', 'Toggle On/Off (Momentary)'):
             if action == 'Toggle On/Off (Momentary)':

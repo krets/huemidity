@@ -763,20 +763,35 @@ input[type="color"] {
     background: transparent;
 }
 
-/* MIDI Layout Grid */
+/* MIDI Layout Grid (Full-height Stretch) */
 .midi-grid {
     display: grid;
     grid-template-columns: 1fr 1.5fr;
     gap: 30px;
+    height: calc(100vh - 160px);
+    min-height: 500px;
 }
 
 .midi-left-column, .midi-right-column {
     display: flex;
     flex-direction: column;
+    height: 100%;
 }
 
 .midi-card {
     border: 1px solid var(--card-border);
+}
+
+.midi-input-card, .midi-mappings-card {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.midi-mappings-card .table-container {
+    flex: 1;
+    overflow-y: auto;
 }
 
 .card-hint {
@@ -807,15 +822,25 @@ input[type="color"] {
     border: 1px solid rgba(255, 51, 102, 0.2);
 }
 
-/* Terminal Log */
+/* Terminal Log (Flex Auto-stretch to fit screen) */
+.flex-terminal-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    margin-bottom: 5px;
+}
+
+.flex-terminal-log {
+    flex: 1;
+    height: auto !important; /* Override fixed height to allow flexbox expansion */
+}
+
 .terminal-log {
     background: rgba(5, 4, 10, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 8px;
-    height: 320px;
     padding: 15px;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 0.85rem;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -823,14 +848,62 @@ input[type="color"] {
     margin-top: 10px;
 }
 
+/* Aligned Columnar Terminal Line formatting */
 .terminal-line {
-    color: var(--neon-cyan);
-    text-shadow: 0 0 5px rgba(0, 240, 255, 0.2);
+    display: flex;
+    align-items: center;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.85rem;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
 }
 
 .terminal-line.placeholder {
     color: var(--text-muted);
-    text-shadow: none;
+    font-family: inherit;
+    border-bottom: none;
+}
+
+.terminal-line .timestamp {
+    color: var(--text-muted);
+    margin-right: 15px;
+    font-size: 0.8rem;
+    flex-shrink: 0;
+}
+
+.terminal-line .event-key {
+    color: var(--neon-cyan);
+    text-shadow: 0 0 5px rgba(0, 240, 255, 0.2);
+    width: 95px;
+    flex-shrink: 0;
+}
+
+.terminal-line .divider {
+    color: var(--text-muted);
+    margin-right: 10px;
+    flex-shrink: 0;
+}
+
+.terminal-line .event-value {
+    color: #ffffff;
+    font-weight: 600;
+    width: 45px;
+    text-align: left;
+    flex-shrink: 0;
+}
+
+.terminal-line .event-space-fill {
+    flex: 1;
+}
+
+.terminal-line .btn-bind {
+    opacity: 0.85;
+    transition: opacity var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.terminal-line:hover .btn-bind {
+    opacity: 1;
 }
 
 /* Mappings Table & Creator Form */
@@ -895,6 +968,7 @@ input[type="color"] {
 .mappings-table td {
     padding: 12px 15px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    vertical-align: middle;
 }
 
 .mappings-table tr:last-child td {
@@ -907,35 +981,27 @@ input[type="color"] {
     padding: 30px !important;
 }
 
-.btn-edit {
-    background: rgba(0, 240, 255, 0.08);
-    color: var(--neon-cyan);
-    border: 1px solid rgba(0, 240, 255, 0.2);
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 0.8rem;
+/* Custom Table Actions */
+.btn-edit, .btn-delete {
+    background: transparent;
+    border: none;
+    font-size: 1.15rem;
     cursor: pointer;
-    margin-right: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: background var(--transition-fast);
 }
 
 .btn-edit:hover {
-    background: rgba(0, 240, 255, 0.15);
-}
-
-.btn-delete {
-    background: rgba(255, 51, 102, 0.08);
-    color: #ff3366;
-    border: 1px solid rgba(255, 51, 102, 0.2);
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background var(--transition-fast);
+    background: rgba(0, 240, 255, 0.1);
 }
 
 .btn-delete:hover {
-    background: rgba(255, 51, 102, 0.15);
+    background: rgba(255, 51, 102, 0.1);
 }
 
 /* Modal Checkboxes layout */

@@ -110,9 +110,9 @@
                 <div class="midi-grid">
                     <!-- Left: Device Selection & Activity Merged -->
                     <div class="midi-left-column">
-                        <div class="glass-card midi-card">
+                        <div class="glass-card midi-card midi-input-card">
                             <div class="card-header-with-status">
-                                <h3>MIDI Input & Live Log</h3>
+                                <h3>MIDI Input</h3>
                                 <span id="midi-status-badge" class="learn-badge">Disconnected</span>
                             </div>
                             
@@ -125,67 +125,29 @@
                                 </div>
                             </div>
                             
-                            <div class="terminal-log-container mt-20">
+                            <div class="terminal-log-container mt-20 flex-terminal-container">
                                 <span class="card-hint">Interact with your controller (knob, key, slider) to trigger events:</span>
-                                <div id="midi-activity-log" class="terminal-log">
+                                <div id="midi-activity-log" class="terminal-log flex-terminal-log">
                                     <div class="terminal-line placeholder">Awaiting MIDI input...</div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Right: Mapping Config & Active Mappings -->
+                    <!-- Right: Active Mappings -->
                     <div class="midi-right-column">
-                        <!-- Map Form Modal/Card -->
-                        <div id="mapping-creator-card" class="glass-card midi-card hidden">
-                            <div class="creator-header">
-                                <h3 id="mapping-creator-title">Create Mapping for <span id="creator-midi-key" class="neon-text">CC 14</span></h3>
-                                <button class="btn-close" onclick="closeMappingCreator()">&times;</button>
-                            </div>
-                            
-                            <div class="form-grid">
-                                <div class="form-group">
-                                    <label for="mapping-target-type">Target Type</label>
-                                    <select id="mapping-target-type" onchange="populateTargetDropdown()">
-                                        <option value="light">Light</option>
-                                        <option value="group">Group</option>
-                                    </select>
-                                </div>
-
-                                <div class="form-group">
-                                    <label for="mapping-target-id">Target Device</label>
-                                    <select id="mapping-target-id">
-                                        <!-- Populated dynamically -->
-                                    </select>
-                                </div>
-
-                                <div class="form-group">
-                                    <label for="mapping-action">Action / Property</label>
-                                    <select id="mapping-action">
-                                        <option value="Toggle On/Off (Latch)">Toggle On/Off (Latch / CC Switch)</option>
-                                        <option value="Toggle On/Off (Momentary)">Toggle On/Off (Momentary / Button Press)</option>
-                                        <option value="Brightness">Brightness (0-254)</option>
-                                        <option value="Hue">Hue / Color (0-65535)</option>
-                                        <option value="Saturation">Saturation (0-254)</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <button id="btn-save-mapping" class="btn btn-primary btn-block mt-20" onclick="submitMapping()">Save Mapping Bind</button>
-                        </div>
-
                         <!-- Active Mappings Table -->
-                        <div class="glass-card midi-card">
+                        <div class="glass-card midi-card midi-mappings-card">
                             <h3>Active Mappings</h3>
                             <div class="table-container">
                                 <table class="mappings-table">
                                     <thead>
                                         <tr>
                                             <th>MIDI Event</th>
-                                            <th>Target Type</th>
+                                            <th style="width: 60px; text-align: center;">Type</th>
                                             <th>Target Name</th>
                                             <th>Action</th>
-                                            <th class="text-right">Actions</th>
+                                            <th class="text-right" style="width: 100px;">Actions</th>
                                         </tr>
                                     </thead>
                                     <tbody id="mappings-table-body">
@@ -201,6 +163,46 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Centered Mapping Creator Modal -->
+    <div id="mapping-creator-modal" class="overlay hidden">
+        <div class="glass-card modal-card">
+            <div class="creator-header">
+                <h3 id="mapping-creator-title">Create Mapping for <span id="creator-midi-key" class="neon-text">CC 14</span></h3>
+                <button class="btn-close" onclick="closeMappingCreator()">&times;</button>
+            </div>
+            
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="mapping-target-type">Target Type</label>
+                    <select id="mapping-target-type" onchange="populateTargetDropdown()">
+                        <option value="light">Light</option>
+                        <option value="group">Group</option>
+                        <option value="scene">Scene</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="mapping-target-id">Target Device / Scene</label>
+                    <select id="mapping-target-id" onchange="onMappingTargetChanged()">
+                        <!-- Populated dynamically -->
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="mapping-action">Action / Property</label>
+                    <select id="mapping-action">
+                        <!-- Populated dynamically based on target type & light capabilities -->
+                    </select>
+                </div>
+            </div>
+            
+            <div class="modal-footer mt-20">
+                <button class="btn btn-secondary" onclick="closeMappingCreator()">Cancel</button>
+                <button id="btn-save-mapping" class="btn btn-primary" onclick="submitMapping()">Save Mapping Bind</button>
+            </div>
+        </div>
     </div>
 
     <!-- Multiselect Add Widgets Modal -->

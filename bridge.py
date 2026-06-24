@@ -144,23 +144,34 @@ class HueBridgeManager:
 
     def get_lights_and_groups(self):
         if self.status != 'connected' or not self.bridge:
-            return {'lights': [], 'groups': []}
+            return {'lights': [], 'groups': [], 'scenes': []}
             
         try:
             lights_data = self.bridge.get_light()
             groups_data = self.bridge.get_group()
+            scenes_data = self.bridge.get_scene()
             
             lights = []
             if isinstance(lights_data, dict):
                 for lid, ldata in lights_data.items():
                     state = ldata.get('state', {})
+                    
+                    # Parse device capabilities
+                    ltype = ldata.get('type', '')
+                    capabilities = ['dim']
+                    if 'color' in ltype.lower() or 'xy' in ltype.lower():
+                        capabilities = ['dim', 'ct', 'color']
+                    elif 'temp' in ltype.lower() or 'ambiance' in ltype.lower():
+                        capabilities = ['dim', 'ct']
+                        
                     lights.append({
                         'id': str(lid),
                         'name': ldata.get('name', f"Light {lid}"),
                         'on': state.get('on', False),
                         'bri': state.get('bri', 0),
                         'hue': state.get('hue', 0),
-                        'sat': state.get('sat', 0)
+                        'sat': state.get('sat', 0),
+                        'capabilities': capabilities
                     })
             
             groups = []
@@ -173,13 +184,84 @@ class HueBridgeManager:
                         'on': action.get('on', False),
                         'bri': action.get('bri', 0),
                         'hue': action.get('hue', 0),
-                        'sat': action.get('sat', 0)
+                        'sat': action.get('sat', 0),
+                        'capabilities': ['dim', 'ct', 'color'] # Groups default to full capabilities
                     })
+            
+            scenes = []
+            if isinstance(scenes_data, dict):
+                for sid, sdata in scenes_data.items():
+                    group_id = sdata.get('group')
+                    if group_id:
+                        scenes.append({
+                            'id': str(sid),
+                            'name': sdata.get('name', f"Scene {sid}"),
+                            'group_id': str(group_id)
+                        })
                     
-            return {'lights': lights, 'groups': groups}
+            return {'lights': lights, 'groups': groups, 'scenes': scenes}
         except Exception as e:
             print(f"[Hue] Error fetching devices: {e}")
-            return {'lights': [], 'groups': []}
+            return {'lights': [], 'groups': [], 'scenes': []}
+
+    def set_scene(self, group_id, scene_id):
+        if self.status != 'connected' or not self.bridge:
+            return False
+        try:
+            self.bridge.set_group(int(group_id), 'scene', scene_id)
+            print(f"[Hue] Recalled scene {scene_id} for group {group_id}")
+            return True
+        except Exception as e:
+            print(f"[Hue] Error activating scene {scene_id} in group {group_id}: {e}")
+            return False
+
+    def _update_rgb(self, target_type, target_id, channel, midi_value):
+        try:
+            import colorsys
+            tid = int(target_id)
+            
+            # Read current color state from bridge
+            if target_type == 'light':
+                data = self.bridge.get_light(tid)
+                state = data.get('state', {})
+                hue = state.get('hue', 0)
+                sat = state.get('sat', 0)
+                bri = state.get('bri', 0)
+            else:
+                data = self.bridge.get_group(tid)
+                action = data.get('action', {})
+                hue = action.get('hue', 0)
+                sat = action.get('sat', 0)
+                bri = action.get('bri', 0)
+                
+            # Convert HSV to RGB (0-1)
+            h = hue / 65535.0
+            s = sat / 254.0
+            v = bri / 254.0
+            r, g, b = colorsys.hsv_to_rgb(h, s, v)
+            
+            # Map midi_value (0-127) to 0-1
+            norm_val = midi_value / 127.0
+            
+            if channel == 'red':
+                r = norm_val
+            elif channel == 'green':
+                g = norm_val
+            elif channel == 'blue':
+                b = norm_val
+                
+            # Convert back to HSV
+            h, s, v = colorsys.rgb_to_hsv(r, g, b)
+            new_hue = int(h * 65535)
+            new_sat = int(s * 254)
+            new_bri = int(v * 254)
+            
+            # Send values via rate limiter
+            self.rate_limiter.send_command(target_type, target_id, 'bri', new_bri)
+            self.rate_limiter.send_command(target_type, target_id, 'hue', new_hue)
+            self.rate_limiter.send_command(target_type, target_id, 'sat', new_sat)
+        except Exception as e:
+            print(f"[Hue] RGB breakout thread error: {e}")
 
     def set_state(self, target_type, target_id, param, value):
         if self.status != 'connected' or not self.rate_limiter or not self.bridge:
@@ -195,6 +277,19 @@ class HueBridgeManager:
             hue_param = 'hue'
         elif param in ('Saturation', 'sat'):
             hue_param = 'sat'
+        elif param == 'Color Temperature':
+            hue_param = 'ct'
+            # Scale 0-127 -> CT mireds 153-500
+            value = int(153 + (value * (347.0 / 127.0)))
+        elif param in ('Red', 'Green', 'Blue'):
+            channel = param.lower()
+            # Execute RGB updates in a background thread to keep MIDI loops non-blocking
+            threading.Thread(
+                target=self._update_rgb, 
+                args=(target_type, target_id, channel, value), 
+                daemon=True
+            ).start()
+            return True
             
         if not hue_param:
             return False

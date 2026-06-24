@@ -67,6 +67,22 @@ class TestHueMidi(unittest.TestCase):
         midi_mgr._process_mapping("Note 60", 100)
         hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off", "toggle")
 
+        # Test momentary toggle mappings
+        self.config.add_mapping("TestController", "CC 15", "light", "2", "Toggle On/Off (Momentary)")
+        hue_mock.reset_mock()
+        midi_mgr._process_mapping("CC 15", 127) # Press -> toggle
+        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off (Momentary)", "toggle")
+        
+        hue_mock.reset_mock()
+        midi_mgr._process_mapping("CC 15", 0) # Release -> ignored
+        hue_mock.set_state.assert_not_called()
+        
+        # Test scene mappings
+        self.config.add_mapping("TestController", "CC 16", "scene", "5/abc123xyz", "Recall Scene")
+        hue_mock.reset_mock()
+        midi_mgr._process_mapping("CC 16", 127) # Press -> activate scene
+        hue_mock.set_scene.assert_called_with("5", "abc123xyz")
+
     def test_rate_limiter(self):
         bridge_mock = MagicMock()
         limiter = HueRateLimiter(bridge_mock, interval=0.05) # 50ms for faster test

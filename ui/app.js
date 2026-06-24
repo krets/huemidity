@@ -6,6 +6,7 @@ let currentTab = 'lights';
 
 let lightsList = [];
 let groupsList = [];
+let scenesList = [];
 let dashboardLayout = []; // Array of {type: 'light'|'group', id: 'X'}
 let activeMappings = {};
 
@@ -169,6 +170,7 @@ function refreshDevices() {
     window.pywebview.api.get_lights_and_groups().then(data => {
         lightsList = data.lights || [];
         groupsList = data.groups || [];
+        scenesList = data.scenes || [];
         renderDashboardWidgets();
     });
 }
@@ -179,6 +181,7 @@ function refreshDevicesSilent() {
     window.pywebview.api.get_lights_and_groups().then(data => {
         lightsList = data.lights || [];
         groupsList = data.groups || [];
+        scenesList = data.scenes || [];
         updateDevicesUIValues();
     });
 }
@@ -198,7 +201,6 @@ function renderDashboardWidgets() {
     container.innerHTML = '';
     
     dashboardLayout.forEach((item, index) => {
-        // Find corresponding device object
         let device = null;
         if (item.type === 'light') {
             device = lightsList.find(l => l.id == item.id);
@@ -207,7 +209,6 @@ function renderDashboardWidgets() {
         }
         
         if (!device) {
-            // Widget not found (deleted from bridge), render missing item placeholder
             device = { id: item.id, name: `Missing ${item.type} (${item.id})`, on: false, bri: 0, hue: 0, sat: 0, missing: true };
         }
         
@@ -302,7 +303,7 @@ function updateDevicesUIValues() {
 
 /* Drag and Drop Layout Reordering */
 function setupDragAndDropEvents() {
-    const cards = document.querySelectorAll('.device-widgets-grid .device-card, #dashboard-widgets-container .device-card');
+    const cards = document.querySelectorAll('.dashboard-widgets-grid .device-card');
     
     cards.forEach(card => {
         card.addEventListener('dragstart', (e) => {
@@ -353,6 +354,7 @@ function openAddWidgetsModal() {
     window.pywebview.api.get_lights_and_groups().then(data => {
         lightsList = data.lights || [];
         groupsList = data.groups || [];
+        scenesList = data.scenes || [];
         populateModalLists();
     });
 }
@@ -375,7 +377,6 @@ function populateModalLists() {
         groupsContainer.innerHTML = '<span style="color:var(--text-muted); font-size: 0.85rem; padding: 4px;">No groups found</span>';
     } else {
         groupsContainer.innerHTML = groupsList.map(g => {
-            const addedClass = isAdded('group', g.id) ? 'checked disabled' : '';
             const checkedAttr = isAdded('group', g.id) ? 'checked disabled' : '';
             return `
                 <label class="checkbox-item modal-item-row" data-name="${g.name.toLowerCase()}">
@@ -526,19 +527,19 @@ function refreshMidiStatus() {
         
         if (info.status === 'listening') {
             badge.innerText = "Live Input: Active";
-            badge.className = "learn-badge"; // normal green
+            badge.className = "learn-badge";
             badge.title = "Device captured. Move a control to bind.";
         } else if (info.status === 'connecting') {
             badge.innerText = "Connecting...";
-            badge.className = "learn-badge error"; // amber style or customized
+            badge.className = "learn-badge error";
             badge.title = "Opening MIDI device port...";
         } else if (info.status === 'error') {
             badge.innerText = "Conflict: Device Busy";
-            badge.className = "learn-badge error"; // red style
+            badge.className = "learn-badge error";
             badge.title = `Error: ${info.error || "Device occupied by another application."}`;
         } else {
             badge.innerText = "Disconnected";
-            badge.className = "learn-badge error"; // red/gray style
+            badge.className = "learn-badge error";
             badge.title = "No MIDI device active.";
         }
     });
@@ -553,45 +554,51 @@ function updateMidiTerminal(eventKey, value, learnCache) {
     }
 
     log.innerHTML = learnCache.map(evt => {
+        const timestamp = evt.time || "YYYY-MM-DD HH:mm:ss";
         return `
-            <div class="terminal-line" style="display: flex; justify-content: space-between; align-items: center; padding: 4px 0;">
-                <span>⚡ Event: ${evt.key} &nbsp; [Val: ${evt.value}]</span>
-                <button class="btn btn-secondary btn-sm" onclick="openMappingCreator('${evt.key}')">Bind</button>
+            <div class="terminal-line">
+                <span class="timestamp">${timestamp}</span>
+                <span class="event-key">${evt.key}</span>
+                <span class="divider">:</span>
+                <span class="event-value">${evt.value}</span>
+                <span class="event-space-fill"></span>
+                <button class="btn btn-secondary btn-sm btn-bind" onclick="openMappingCreator('${evt.key}')">Bind</button>
             </div>
         `;
     }).join('');
 }
 
-/* Mapping Bind Form Management */
+/* Centered Mapping Creator Modal Management */
 function openMappingCreator(midiKey, editingMapping = null) {
     const title = document.getElementById('mapping-creator-title');
     const saveBtn = document.getElementById('btn-save-mapping');
     
     document.getElementById('creator-midi-key').innerText = midiKey;
-    document.getElementById('mapping-creator-card').classList.remove('hidden');
+    document.getElementById('mapping-creator-modal').classList.remove('hidden');
     
     if (editingMapping) {
         title.innerHTML = `Edit Mapping for <span id="creator-midi-key" class="neon-text">${midiKey}</span>`;
         saveBtn.innerText = "Update Mapping Bind";
         
-        // Populate form with current values
         document.getElementById('mapping-target-type').value = editingMapping.target_type;
-        populateTargetDropdown(); // populate ID list first
+        populateTargetDropdown();
         document.getElementById('mapping-target-id').value = editingMapping.target_id;
+        
+        // Populate actions list based on capabilities first, then set value
+        onMappingTargetChanged();
         document.getElementById('mapping-action').value = editingMapping.action;
     } else {
         title.innerHTML = `Create Mapping for <span id="creator-midi-key" class="neon-text">${midiKey}</span>`;
         saveBtn.innerText = "Save Mapping Bind";
         
-        // Pre-select defaults
         document.getElementById('mapping-target-type').value = 'light';
         populateTargetDropdown();
-        document.getElementById('mapping-action').value = 'Toggle On/Off (Latch)';
+        onMappingTargetChanged();
     }
 }
 
 function closeMappingCreator() {
-    document.getElementById('mapping-creator-card').classList.add('hidden');
+    document.getElementById('mapping-creator-modal').classList.add('hidden');
 }
 
 function populateTargetDropdown() {
@@ -604,11 +611,66 @@ function populateTargetDropdown() {
         lightsList.forEach(light => {
             selectTargetId.innerHTML += `<option value="${light.id}">${light.name} (Light ${light.id})</option>`;
         });
-    } else {
+    } else if (targetType === 'group') {
         groupsList.forEach(group => {
             selectTargetId.innerHTML += `<option value="${group.id}">${group.name} (Group ${group.id})</option>`;
         });
+    } else if (targetType === 'scene') {
+        scenesList.forEach(scene => {
+            const groupObj = groupsList.find(g => g.id == scene.group_id);
+            const groupName = groupObj ? groupObj.name : `Group ${scene.group_id}`;
+            selectTargetId.innerHTML += `<option value="${scene.group_id}/${scene.id}">${scene.name} (${groupName})</option>`;
+        });
     }
+}
+
+/* Filter Available Actions based on target hardware capabilities */
+function onMappingTargetChanged() {
+    const targetType = document.getElementById('mapping-target-type').value;
+    const targetId = document.getElementById('mapping-target-id').value;
+    const actionSelect = document.getElementById('mapping-action');
+    
+    actionSelect.innerHTML = '';
+    
+    if (targetType === 'scene') {
+        actionSelect.innerHTML = '<option value="Recall Scene">Recall Scene</option>';
+        return;
+    }
+    
+    // Core actions (all lights & groups support this)
+    let actions = [
+        { val: 'Toggle On/Off (Latch)', label: 'Toggle On/Off (Latch)' },
+        { val: 'Toggle On/Off (Momentary)', label: 'Toggle On/Off (Momentary)' },
+        { val: 'Brightness', label: 'Brightness' }
+    ];
+    
+    if (targetType === 'group') {
+        // Groups default to supporting color and ct by default
+        actions.push({ val: 'Color Temperature', label: 'Color Temperature (CT)' });
+        actions.push({ val: 'Hue', label: 'Hue' });
+        actions.push({ val: 'Saturation', label: 'Saturation' });
+        actions.push({ val: 'Red', label: 'Red Component' });
+        actions.push({ val: 'Green', label: 'Green Component' });
+        actions.push({ val: 'Blue', label: 'Blue Component' });
+    } else if (targetType === 'light') {
+        const light = lightsList.find(l => l.id == targetId);
+        if (light && light.capabilities) {
+            if (light.capabilities.includes('ct')) {
+                actions.push({ val: 'Color Temperature', label: 'Color Temperature (CT)' });
+            }
+            if (light.capabilities.includes('color')) {
+                actions.push({ val: 'Hue', label: 'Hue' });
+                actions.push({ val: 'Saturation', label: 'Saturation' });
+                actions.push({ val: 'Red', label: 'Red Component' });
+                actions.push({ val: 'Green', label: 'Green Component' });
+                actions.push({ val: 'Blue', label: 'Blue Component' });
+            }
+        }
+    }
+    
+    actions.forEach(act => {
+        actionSelect.innerHTML += `<option value="${act.val}">${act.label}</option>`;
+    });
 }
 
 function submitMapping() {
@@ -618,7 +680,7 @@ function submitMapping() {
     const action = document.getElementById('mapping-action').value;
     
     if (!targetId) {
-        alert("Please select a target light or group.");
+        alert("Please select a target device or scene.");
         return;
     }
 
@@ -646,25 +708,51 @@ function renderMappings() {
         tbody.innerHTML = keys.map(key => {
             const m = activeMappings[key];
             
-            // Find names of target
+            // 1. Icon type mapping
+            let typeIcon = '💡';
+            if (m.target_type === 'group') typeIcon = '📦';
+            if (m.target_type === 'scene') typeIcon = '🎬';
+            
+            // 2. Target name mapping
             let targetName = `ID ${m.target_id}`;
             if (m.target_type === 'light') {
                 const lObj = lightsList.find(l => l.id == m.target_id);
                 if (lObj) targetName = lObj.name;
-            } else {
+            } else if (m.target_type === 'group') {
                 const gObj = groupsList.find(g => g.id == m.target_id);
                 if (gObj) targetName = gObj.name;
+            } else if (m.target_type === 'scene') {
+                // Scene target_id contains group_id/scene_id
+                if (m.target_id.includes('/')) {
+                    const [gId, sId] = m.target_id.split('/', 2);
+                    const scObj = scenesList.find(s => s.id == sId);
+                    const grObj = groupsList.find(g => g.id == gId);
+                    const gName = grObj ? grObj.name : `Group ${gId}`;
+                    if (scObj) {
+                        targetName = `${scObj.name} (${gName})`;
+                    } else {
+                        targetName = `Scene (${gName})`;
+                    }
+                }
+            }
+
+            // 3. Concise Action Label Mapping
+            let actionLabel = m.action;
+            if (m.action.startsWith('Toggle On/Off')) {
+                actionLabel = "On/Off";
+            } else if (m.action === "Color Temperature") {
+                actionLabel = "Color Temp";
             }
 
             return `
                 <tr>
                     <td class="neon-text font-bold">${key}</td>
-                    <td style="text-transform: capitalize;">${m.target_type}</td>
+                    <td style="text-align: center; font-size: 1.1rem;" title="${m.target_type}">${typeIcon}</td>
                     <td>${targetName}</td>
-                    <td>${m.action}</td>
+                    <td>${actionLabel}</td>
                     <td class="text-right">
-                        <button class="btn-edit" onclick="editMapping('${key}')">Edit</button>
-                        <button class="btn-delete" onclick="deleteMapping('${key}')">Delete</button>
+                        <button class="btn-edit" onclick="editMapping('${key}')" title="Edit Bind">✏️</button>
+                        <button class="btn-delete" onclick="deleteMapping('${key}')" title="Delete Bind">🗑️</button>
                     </td>
                 </tr>
             `;
