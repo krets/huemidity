@@ -1,13 +1,39 @@
 import json
 import os
+import sys
 
 CONFIG_FILE = "config.json"
 
+def get_user_config_path(filename=CONFIG_FILE):
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA') or os.path.expanduser('~\\AppData\\Roaming')
+        config_dir = os.path.join(base, 'HueMIDIty')
+    elif sys.platform == 'darwin':
+        config_dir = os.path.expanduser('~/Library/Application Support/HueMIDIty')
+    else:
+        config_dir = os.path.expanduser('~/.config/huemidity')
+        
+    os.makedirs(config_dir, exist_ok=True)
+    user_path = os.path.join(config_dir, filename)
+    
+    # Migrate local config if it exists and user AppData config doesn't
+    local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    if os.path.exists(local_path) and not os.path.exists(user_path):
+        try:
+            import shutil
+            shutil.copy2(local_path, user_path)
+            print(f"[Migration] Successfully migrated config from {local_path} to {user_path}")
+        except Exception as e:
+            print(f"[Migration] Error migrating config: {e}")
+            
+    return user_path
+
 class ConfigManager:
     def __init__(self, config_file=None):
-        # Resolve config.json relative to this file
-        filename = config_file or CONFIG_FILE
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        if config_file:
+            self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_file)
+        else:
+            self.config_path = get_user_config_path()
         self.data = self.load()
 
     def load(self):

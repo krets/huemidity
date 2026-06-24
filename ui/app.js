@@ -38,6 +38,16 @@ function initApp() {
     if (actionSel) {
         actionSel.addEventListener('change', updateMappingAutoOnVisibility);
     }
+
+    // 4. Close custom dropdown when clicking outside
+    window.addEventListener('click', (e) => {
+        const select = document.getElementById('target-id-select-wrapper');
+        const container = document.getElementById('custom-select-options');
+        if (select && !select.contains(e.target)) {
+            select.classList.remove('open');
+            if (container) container.classList.add('hidden');
+        }
+    });
 }
 
 /* Onboarding & Connection Handling */
@@ -121,7 +131,7 @@ function restartDiscovery() {
 }
 
 async function disconnectBridge() {
-    const approved = await showCustomConfirm("Disconnect from Hue Bridge and log out?", "Disconnect Bridge");
+    const approved = await showCustomConfirm("Disconnect and forget the current Hue Bridge?", "Forget Hue Bridge");
     if (approved) {
         closeSettingsModal();
         if (deviceUpdateInterval) clearInterval(deviceUpdateInterval);
@@ -675,19 +685,42 @@ function openMappingCreator(midiKey, editingMapping = null) {
         // Load checkbox states
         document.getElementById('mapping-invert').checked = editingMapping.invert || false;
         document.getElementById('mapping-auto-on').checked = editingMapping.auto_on || false;
+        
+        // Update custom dropdown selected text
+        updateCustomSelectTriggerLabel();
     } else {
         title.innerHTML = `Create Mapping for <span id="creator-midi-key" class="neon-text">${midiKey}</span>`;
         saveBtn.innerText = "Save Mapping Bind";
         
         document.getElementById('mapping-target-type').value = 'light';
         populateTargetDropdown();
+        
+        // Select first target option by default if available
+        const selectTargetId = document.getElementById('mapping-target-id');
+        if (selectTargetId.options.length > 0) {
+            selectTargetId.selectedIndex = 0;
+        }
+        
         onMappingTargetChanged();
+        updateCustomSelectTriggerLabel();
         
         // Reset checkboxes
         document.getElementById('mapping-invert').checked = false;
         document.getElementById('mapping-auto-on').checked = false;
     }
     updateMappingAutoOnVisibility();
+}
+
+function onMappingTargetTypeChanged() {
+    populateTargetDropdown();
+    const selectTargetId = document.getElementById('mapping-target-id');
+    if (selectTargetId.options.length > 0) {
+        selectTargetId.selectedIndex = 0;
+    } else {
+        selectTargetId.value = '';
+    }
+    onMappingTargetChanged();
+    updateCustomSelectTriggerLabel();
 }
 
 function closeMappingCreator() {
@@ -697,24 +730,54 @@ function closeMappingCreator() {
 function populateTargetDropdown() {
     const targetType = document.getElementById('mapping-target-type').value;
     const selectTargetId = document.getElementById('mapping-target-id');
+    const customContainer = document.getElementById('custom-select-options');
     
     selectTargetId.innerHTML = '';
+    customContainer.innerHTML = '';
     
     if (targetType === 'light') {
         lightsList.forEach(light => {
             const deviceType = light.type || 'Light';
-            selectTargetId.innerHTML += `<option value="${light.id}">${light.name} (${light.id}: ${deviceType})</option>`;
+            const optionText = `${light.name} (${light.id}: ${deviceType})`;
+            
+            selectTargetId.innerHTML += `<option value="${light.id}">${optionText}</option>`;
+            
+            customContainer.innerHTML += `
+                <div class="custom-option-item" onclick="selectCustomOption('${light.id}')">
+                    <span class="option-title">${light.name}</span>
+                    <span class="option-meta">(${light.id}: ${deviceType})</span>
+                </div>
+            `;
         });
     } else if (targetType === 'group') {
         groupsList.forEach(group => {
             const deviceType = group.type || 'Group';
-            selectTargetId.innerHTML += `<option value="${group.id}">${group.name} (${group.id}: ${deviceType})</option>`;
+            const optionText = `${group.name} (${group.id}: ${deviceType})`;
+            
+            selectTargetId.innerHTML += `<option value="${group.id}">${optionText}</option>`;
+            
+            customContainer.innerHTML += `
+                <div class="custom-option-item" onclick="selectCustomOption('${group.id}')">
+                    <span class="option-title">${group.name}</span>
+                    <span class="option-meta">(${group.id}: ${deviceType})</span>
+                </div>
+            `;
         });
     } else if (targetType === 'scene') {
         scenesList.forEach(scene => {
             const groupObj = groupsList.find(g => g.id == scene.group_id);
             const groupName = groupObj ? groupObj.name : `Group ${scene.group_id}`;
-            selectTargetId.innerHTML += `<option value="${scene.group_id}/${scene.id}">${scene.name} (${scene.id}: Scene in ${groupName})</option>`;
+            const optionText = `${scene.name} (${scene.id}: Scene in ${groupName})`;
+            const value = `${scene.group_id}/${scene.id}`;
+            
+            selectTargetId.innerHTML += `<option value="${value}">${optionText}</option>`;
+            
+            customContainer.innerHTML += `
+                <div class="custom-option-item" onclick="selectCustomOption('${value}')">
+                    <span class="option-title">${scene.name}</span>
+                    <span class="option-meta">(${scene.id}: Scene in ${groupName})</span>
+                </div>
+            `;
         });
     }
 }
@@ -954,7 +1017,7 @@ function closeSettingsModal() {
 }
 
 async function quitApp() {
-    const approved = await showCustomConfirm("Completely exit and close HueMIDI?", "Quit Application");
+    const approved = await showCustomConfirm("Completely exit and close HueMIDIty?", "Quit Application");
     if (approved) {
         window.pywebview.api.quit_application();
     }
@@ -1017,4 +1080,86 @@ function resolveCustomConfirm(value) {
     if (confirmResolve) {
         confirmResolve(value);
     }
+}
+
+/* Custom Dropdown Trigger Handlers */
+function toggleCustomSelect(e) {
+    if (e) e.stopPropagation();
+    const wrapper = document.getElementById('target-id-select-wrapper');
+    const container = document.getElementById('custom-select-options');
+    if (!wrapper || !container) return;
+    
+    const isOpen = wrapper.classList.contains('open');
+    if (isOpen) {
+        wrapper.classList.remove('open');
+        container.classList.add('hidden');
+    } else {
+        wrapper.classList.add('open');
+        container.classList.remove('hidden');
+    }
+}
+
+function selectCustomOption(value) {
+    const nativeSelect = document.getElementById('mapping-target-id');
+    if (nativeSelect) {
+        nativeSelect.value = value;
+        nativeSelect.dispatchEvent(new Event('change'));
+    }
+    
+    updateCustomSelectTriggerLabel();
+    
+    const wrapper = document.getElementById('target-id-select-wrapper');
+    const container = document.getElementById('custom-select-options');
+    if (wrapper) wrapper.classList.remove('open');
+    if (container) container.classList.add('hidden');
+}
+
+function updateCustomSelectTriggerLabel() {
+    const targetType = document.getElementById('mapping-target-type').value;
+    const targetId = document.getElementById('mapping-target-id').value;
+    const triggerTextEl = document.getElementById('custom-select-selected-text');
+    
+    if (!targetId) {
+        triggerTextEl.innerHTML = '<span class="option-title">Select Target Device</span>';
+        return;
+    }
+    
+    let html = '';
+    if (targetType === 'light') {
+        const light = lightsList.find(l => l.id == targetId);
+        if (light) {
+            html = `<span class="option-title">${light.name}</span> <span class="option-meta">(${light.id}: ${light.type || 'Light'})</span>`;
+        } else {
+            html = `<span class="option-title">Light ${targetId}</span> <span class="option-meta">(${targetId})</span>`;
+        }
+    } else if (targetType === 'group') {
+        const group = groupsList.find(g => g.id == targetId);
+        if (group) {
+            html = `<span class="option-title">${group.name}</span> <span class="option-meta">(${group.id}: ${group.type || 'Group'})</span>`;
+        } else {
+            html = `<span class="option-title">Group ${targetId}</span> <span class="option-meta">(${targetId})</span>`;
+        }
+    } else if (targetType === 'scene') {
+        if (targetId.includes('/')) {
+            const [gId, sId] = targetId.split('/', 2);
+            const scene = scenesList.find(s => s.id == sId);
+            const group = groupsList.find(g => g.id == gId);
+            const gName = group ? group.name : `Group ${gId}`;
+            if (scene) {
+                html = `<span class="option-title">${scene.name}</span> <span class="option-meta">(${scene.id}: Scene in ${gName})</span>`;
+            } else {
+                html = `<span class="option-title">Scene ${sId}</span> <span class="option-meta">(${targetId})</span>`;
+            }
+        } else {
+            const scene = scenesList.find(s => s.id == targetId);
+            if (scene) {
+                const group = groupsList.find(g => g.id == scene.group_id);
+                const gName = group ? group.name : `Group ${scene.group_id}`;
+                html = `<span class="option-title">${scene.name}</span> <span class="option-meta">(${scene.id}: Scene in ${gName})</span>`;
+            } else {
+                html = `<span class="option-title">Scene ${targetId}</span> <span class="option-meta">(${targetId})</span>`;
+            }
+        }
+    }
+    triggerTextEl.innerHTML = html;
 }

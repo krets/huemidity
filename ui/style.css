@@ -465,9 +465,14 @@ select:focus {
 }
 
 .status-badge.connected {
-    background: rgba(57, 255, 20, 0.1);
-    color: var(--neon-green);
-    border: 1px solid rgba(57, 255, 20, 0.2);
+    background: rgba(255, 255, 255, 0.03);
+    color: #7ab893;
+    border: 1px solid rgba(122, 184, 147, 0.2);
+}
+
+.status-badge.connected .indicator-dot {
+    background: #7ab893;
+    box-shadow: none;
 }
 
 .indicator-dot {
@@ -1065,10 +1070,37 @@ input[type="color"] {
 }
 
 .checkbox-item input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    accent-color: var(--neon-cyan);
+    appearance: none;
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--card-border);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.03);
     cursor: pointer;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.checkbox-item input[type="checkbox"]:hover {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.25);
+}
+
+.checkbox-item input[type="checkbox"]:checked {
+    background: var(--neon-cyan);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.4);
+}
+
+.checkbox-item input[type="checkbox"]:checked::after {
+    content: '✓';
+    color: #000000;
+    font-size: 11px;
+    font-weight: bold;
 }
 
 .checkbox-item span {
@@ -1190,4 +1222,92 @@ select option {
     color: white;
     font-family: inherit;
 }
+
+/* Custom Select Dropdown UI */
+.custom-select-wrapper {
+    position: relative;
+    width: 100%;
+    user-select: none;
+}
+
+.custom-select-trigger {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: white;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: border-color var(--transition-fast);
+}
+
+.custom-select-trigger:hover {
+    border-color: rgba(255, 255, 255, 0.15);
+}
+
+.custom-select-wrapper.open .custom-select-trigger {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
+}
+
+.custom-select-arrow {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    transition: transform var(--transition-fast);
+}
+
+.custom-select-wrapper.open .custom-select-arrow {
+    transform: rotate(180deg);
+}
+
+.custom-options-container {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    right: 0;
+    background: rgba(18, 14, 36, 0.95);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    z-index: 1100;
+    max-height: 200px;
+    overflow-y: auto;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.custom-option-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+    transition: background var(--transition-fast);
+}
+
+.custom-option-item:last-child {
+    border-bottom: none;
+}
+
+.custom-option-item:hover {
+    background: rgba(0, 240, 255, 0.08);
+}
+
+.custom-select-wrapper .option-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: white;
+}
+
+.custom-select-wrapper .option-meta {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 10px;
+    font-family: monospace;
+}
+
 

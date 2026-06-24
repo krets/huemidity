@@ -10,7 +10,7 @@ from config import ConfigManager
 from bridge import HueRateLimiter
 from midi import MidiManager
 
-class TestHueMidi(unittest.TestCase):
+class TestHueMidity(unittest.TestCase):
     def setUp(self):
         # Create a clean test_config.json for testing
         self.test_dir = os.path.dirname(os.path.abspath(__file__))

@@ -4,7 +4,7 @@
 cd "$(dirname "$0")"
 
 echo "=========================================="
-echo "Installing HueMIDI for macOS..."
+echo "Installing HueMIDIty for macOS..."
 echo "=========================================="
 
 # Check if uv is installed, try to find or install it
@@ -43,7 +43,7 @@ fi
 
 # 4. Generate a macOS .app bundle using osacompile and an AppleScript wrapper
 echo "Generating macOS .app bundle..."
-APP_NAME="HueMIDI"
+APP_NAME="HueMIDIty"
 
 # Create a temporary run script file
 cat <<EOF > run.applescript

@@ -32,7 +32,7 @@ def acquire_single_instance_lock():
         lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lock_socket.bind(('127.0.0.1', LOCK_PORT))
     except socket.error:
-        print("[System] Another instance of HueMIDI is already running. Exiting.")
+        print("[System] Another instance of HueMIDIty is already running. Exiting.")
         sys.exit(0)
 
 acquire_single_instance_lock()
@@ -118,6 +118,44 @@ if sys.platform == 'darwin':
         mac_status_item.setMenu_(menu)
         print("[macOS Tray] Native status bar item initialized.")
 
+def set_windows_window_icon(hwnd=None):
+    try:
+        import ctypes
+        from PIL import Image
+        
+        # 1. Find window handle by title
+        if not hwnd:
+            hwnd = ctypes.windll.user32.FindWindowW(None, "HueMIDIty Dashboard")
+        if not hwnd:
+            return False
+            
+        # 2. Save PIL image as a temp .ico file if it doesn't exist
+        icon_png_path = os.path.abspath(os.path.join("ui", "icon.png"))
+        temp_ico_path = os.path.abspath(os.path.join("ui", "temp_icon.ico"))
+        
+        if os.path.exists(icon_png_path) and not os.path.exists(temp_ico_path):
+            img = Image.open(icon_png_path)
+            img.save(temp_ico_path, format='ICO', sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
+            
+        if os.path.exists(temp_ico_path):
+            # Load the icon and send WM_SETICON messages
+            hicon = ctypes.windll.user32.LoadImageW(
+                None, 
+                temp_ico_path, 
+                1, # IMAGE_ICON
+                0, 0, 
+                0x00000010 | 0x00008000 # LR_LOADFROMFILE | LR_SHARED
+            )
+            if hicon:
+                # Send WM_SETICON (0x0080) for small (0) and big (1) window representations
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, hicon)
+                ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, hicon)
+                print("[Windows Icon] Window taskbar icon updated programmatically.")
+                return True
+    except Exception as e:
+        print(f"[Windows Icon] Error setting window icon: {e}")
+    return False
+
 # 4. Windows Tray Implementation using pystray
 def setup_windows_tray():
     global win_tray_icon
@@ -146,12 +184,13 @@ def setup_windows_tray():
         
     import pystray
     win_tray_icon = pystray.Icon(
-        "HueMIDI", 
+        "HueMIDIty", 
         image, 
         menu=pystray.Menu(
             pystray.MenuItem(
-                lambda item: "Hide Dashboard" if window_visible else "Show Dashboard", 
-                on_toggle_clicked
+                "Show/Hide Dashboard", 
+                on_toggle_clicked,
+                default=True
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", on_quit_clicked)
@@ -252,6 +291,15 @@ class WebviewApi:
 def main():
     global config_manager, hue_manager, midi_manager, main_window, window_visible
     
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            myappid = 'krets.huemidity.app'
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            print(f"[Windows Icon] AppUserModelID set to {myappid}")
+        except Exception as e:
+            print(f"[Windows Icon] Error setting AppUserModelID at startup: {e}")
+            
     print("[System] Initializing Managers...")
     config_manager = ConfigManager()
     hue_manager = HueBridgeManager(config_manager)
@@ -273,7 +321,7 @@ def main():
     
     # Create window (always visible on start to guide user, hides on click-off if supported)
     main_window = webview.create_window(
-        'HueMIDI Dashboard', 
+        'HueMIDIty Dashboard', 
         'ui/index.html', 
         width=950, 
         height=680, 
@@ -310,13 +358,13 @@ def main():
                 
         elif sys.platform == 'win32':
             setup_windows_tray()
-            # Set AppUserModelID for taskbar grouping so Windows associates the script with a custom app ID
-            try:
-                import ctypes
-                myappid = 'krets.huemidi.app'
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-            except Exception as e:
-                print(f"[Windows Icon] Error setting AppUserModelID: {e}")
+            # Set taskbar window icon programmatically with retries to ensure window creation is complete
+            def apply_win_icon():
+                for _ in range(50): # Try for 5 seconds
+                    time.sleep(0.1)
+                    if set_windows_window_icon():
+                        break
+            threading.Thread(target=apply_win_icon, daemon=True).start()
 
     webview.start(on_webview_start)
 

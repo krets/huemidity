@@ -1,6 +1,6 @@
 @echo off
 echo ==========================================
-echo Setting up HueMIDI Environment using uv...
+echo Setting up HueMIDIty Environment using uv...
 echo ==========================================
 
 where uv >nul 2>nul
