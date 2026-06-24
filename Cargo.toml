@@ -1,0 +1,18 @@
+[package]
+name = "huemidity"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+auto-launch = "0.6.0"
+chrono = { version = "0.4.45", features = ["clock"] }
+crossbeam-channel = "0.5.15"
+directories = "6.0.0"
+eframe = "0.33.3"
+midir = "0.11.0"
+muda = "0.19.3"
+reqwest = { version = "0.13.4", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.52.3", features = ["full"] }
+tray-icon = "0.24.1"

@@ -3,3 +3,8 @@ __pycache__/
 config.json
 test_config.json
 ui/temp_icon.ico
+
+
+# Added by cargo
+
+/target
