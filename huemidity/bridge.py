@@ -135,8 +135,12 @@ class HueBridgeManager:
                 self.error_message = "Press the link button on your Hue Bridge."
                 print("[Hue] Link button not pressed. Retrying in 3 seconds...")
             except Exception as e:
+                import sys
                 self.status = 'error'
-                self.error_message = f"Connection failed: {str(e)}"
+                if sys.platform == 'darwin' and hasattr(e, 'errno') and e.errno == 65:
+                    self.error_message = "macOS Local Network permission denied. Please allow it in System Settings > Privacy & Security > Local Network."
+                else:
+                    self.error_message = f"Connection failed: {str(e)}"
                 print(f"[Hue] Connection error: {e}. Retrying in 3 seconds...")
             
             # Interruptible sleep for 3 seconds

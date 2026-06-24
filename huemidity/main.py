@@ -92,34 +92,54 @@ if sys.platform == 'darwin':
             print("[macOS Tray] Quit clicked.")
             cleanup_and_exit()
 
+        def setupApp_(self, sender):
+            global mac_status_item
+            
+            # Setup Status Bar / Tray
+            try:
+                status_bar = NSStatusBar.systemStatusBar()
+                mac_status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
+                
+                button = mac_status_item.button()
+                button.setTitle_("💡⌨️")  # Emoji icon representing light bulb + MIDI keys
+                
+                menu = NSMenu.alloc().init()
+                
+                dash_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Configuration Dashboard", "toggleDashboard:", "d"
+                )
+                dash_item.setTarget_(self)
+                menu.addItem_(dash_item)
+                
+                menu.addItem_(NSMenuItem.separatorItem())
+                
+                quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    "Quit", "quitApp:", "q"
+                )
+                quit_item.setTarget_(self)
+                menu.addItem_(quit_item)
+                
+                mac_status_item.setMenu_(menu)
+                print("[macOS Tray] Native status bar item initialized.")
+            except Exception as e:
+                print(f"[macOS Tray] Error initializing status bar item: {e}")
+
+            # Set Dock Icon
+            try:
+                from AppKit import NSApplication, NSImage
+                icon_path = os.path.join(BASE_DIR, "ui", "icon.png")
+                image = NSImage.alloc().initByReferencingFile_(icon_path)
+                NSApplication.sharedApplication().setApplicationIconImage_(image)
+                print("[macOS Icon] Dock icon updated.")
+            except Exception as e:
+                print(f"[macOS Icon] Error setting Dock icon: {e}")
+
     def setup_macos_tray():
-        global mac_status_item, mac_menu_actions
-        
-        status_bar = NSStatusBar.systemStatusBar()
-        mac_status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
-        
-        button = mac_status_item.button()
-        button.setTitle_("💡⌨️")  # Emoji icon representing light bulb + MIDI keys
-        
-        menu = NSMenu.alloc().init()
+        global mac_menu_actions
         mac_menu_actions = StatusMenuActions.alloc().init()
-        
-        dash_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Configuration Dashboard", "toggleDashboard:", "d"
+        mac_menu_actions.pyobjc_performSelectorOnMainThread_withObject_waitUntilDone_(
+            "setupApp:", None, True
         )
-        dash_item.setTarget_(mac_menu_actions)
-        menu.addItem_(dash_item)
-        
-        menu.addItem_(NSMenuItem.separatorItem())
-        
-        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit", "quitApp:", "q"
-        )
-        quit_item.setTarget_(mac_menu_actions)
-        menu.addItem_(quit_item)
-        
-        mac_status_item.setMenu_(menu)
-        print("[macOS Tray] Native status bar item initialized.")
 
 def set_windows_window_icon(hwnd=None):
     try:
@@ -138,7 +158,7 @@ def set_windows_window_icon(hwnd=None):
         if not hwnd:
             return False
             
-        icon_ico_path = os.path.abspath(os.path.join("ui", "icon.ico"))
+        icon_ico_path = os.path.join(BASE_DIR, "ui", "icon.ico")
         
         if os.path.exists(icon_ico_path):
             # Load the icon and send WM_SETICON messages
@@ -222,7 +242,7 @@ def sync_autostart(enabled):
 def setup_windows_tray():
     global win_tray_icon
     
-    icon_path = os.path.join("ui", "icon.ico")
+    icon_path = os.path.join(BASE_DIR, "ui", "icon.ico")
     
     def on_toggle_clicked(icon=None, item=None):
         global window_visible
@@ -257,6 +277,9 @@ class WebviewApi:
 
     def get_connection_status(self):
         return self.hue.status
+
+    def get_connection_error(self):
+        return self.hue.error_message
 
     def get_bridge_ip(self):
         return self.hue.bridge_ip
@@ -375,9 +398,10 @@ def main():
     midi_manager.set_ui_callback(push_midi_to_ui)
     
     # Create window (always visible on start to guide user, hides on click-off if supported)
+    html_path = os.path.join(BASE_DIR, 'ui', 'index.html')
     main_window = webview.create_window(
         'HueMIDIty Dashboard', 
-        'ui/index.html', 
+        html_path, 
         width=950, 
         height=680, 
         js_api=api,
@@ -402,14 +426,6 @@ def main():
         # Load system tray based on platform
         if sys.platform == 'darwin':
             setup_macos_tray()
-            # Set Dock Icon
-            try:
-                from AppKit import NSApplication, NSImage
-                icon_path = os.path.abspath("ui/icon.png")
-                image = NSImage.alloc().initByReferencingFile_(icon_path)
-                NSApplication.sharedApplication().setApplicationIconImage_(image)
-            except Exception as e:
-                print(f"[macOS Icon] Error setting Dock icon: {e}")
                 
         elif sys.platform == 'win32':
             setup_windows_tray()

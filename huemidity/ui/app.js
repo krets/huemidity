@@ -100,6 +100,11 @@ function updateOnboardingUI(status) {
         });
     } else if (status === 'error') {
         document.getElementById('state-error').classList.remove('hidden');
+        if (window.pywebview.api.get_connection_error) {
+            window.pywebview.api.get_connection_error().then(err => {
+                document.getElementById('error-message-text').innerText = err || "Unable to connect to the Hue Bridge.";
+            });
+        }
     } else if (status === 'idle') {
         document.getElementById('state-manual-ip').classList.remove('hidden');
     }
