@@ -1,0 +1,8 @@
+pywebview
+phue
+mido
+python-rtmidi
+requests
+pystray
+Pillow
+pyobjc-framework-Cocoa; sys_platform == 'darwin'

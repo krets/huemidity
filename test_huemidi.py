@@ -1,0 +1,93 @@
+import unittest
+import os
+import json
+import time
+import threading
+from unittest.mock import MagicMock
+
+# Import the modules we want to test
+from config import ConfigManager
+from bridge import HueRateLimiter
+from midi import MidiManager
+
+class TestHueMidi(unittest.TestCase):
+    def setUp(self):
+        # Create a clean config.json for testing
+        self.test_dir = os.path.dirname(os.path.abspath(__file__))
+        self.config_path = os.path.join(self.test_dir, "config.json")
+        if os.path.exists(self.config_path):
+            os.remove(self.config_path)
+        self.config = ConfigManager()
+
+    def tearDown(self):
+        # Clean up test config.json
+        if os.path.exists(self.config_path):
+            os.remove(self.config_path)
+
+    def test_config_manager(self):
+        # Verify defaults
+        self.assertEqual(self.config.get_bridge_ip(), "")
+        self.assertEqual(self.config.get_selected_device(), "")
+        
+        # Test sets & saves
+        self.config.set_bridge_ip("192.168.1.50")
+        self.config.set_selected_device("MidiKeyboard")
+        self.assertEqual(self.config.get_bridge_ip(), "192.168.1.50")
+        self.assertEqual(self.config.get_selected_device(), "MidiKeyboard")
+
+        # Test mappings
+        self.config.add_mapping("MidiKeyboard", "CC 14", "light", "1", "Brightness")
+        mappings = self.config.get_mappings("MidiKeyboard")
+        self.assertIn("CC 14", mappings)
+        self.assertEqual(mappings["CC 14"]["action"], "Brightness")
+        self.assertEqual(mappings["CC 14"]["target_id"], "1")
+
+        self.config.remove_mapping("MidiKeyboard", "CC 14")
+        self.assertNotIn("CC 14", self.config.get_mappings("MidiKeyboard"))
+
+    def test_midi_value_scaling(self):
+        # Mock dependencies
+        hue_mock = MagicMock()
+        midi_mgr = MidiManager(self.config, hue_mock)
+        midi_mgr.selected_device = "TestController"
+        
+        # Add a mapping
+        self.config.add_mapping("TestController", "CC 14", "light", "1", "Brightness")
+        self.config.add_mapping("TestController", "Note 60", "light", "2", "Toggle On/Off")
+        
+        # Process midi message for CC 14 with MIDI value 127 (Max Brightness)
+        midi_mgr._process_mapping("CC 14", 127)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 254)
+        
+        # Process midi message for CC 14 with MIDI value 0 (Min Brightness)
+        midi_mgr._process_mapping("CC 14", 0)
+        hue_mock.set_state.assert_called_with("light", "1", "Brightness", 0)
+
+        # Process midi message for Note 60 with MIDI value 100 (Note On triggers toggle)
+        midi_mgr._process_mapping("Note 60", 100)
+        hue_mock.set_state.assert_called_with("light", "2", "Toggle On/Off", "toggle")
+
+    def test_rate_limiter(self):
+        bridge_mock = MagicMock()
+        limiter = HueRateLimiter(bridge_mock, interval=0.05) # 50ms for faster test
+        
+        # Send 3 rapid brightness commands in under 5ms
+        limiter.send_command("light", "1", "bri", 50)
+        limiter.send_command("light", "1", "bri", 100)
+        limiter.send_command("light", "1", "bri", 150)
+        
+        # First command should execute immediately
+        bridge_mock.set_light.assert_called_once_with(1, "bri", 50)
+        
+        # Reset mock calls count
+        bridge_mock.reset_mock()
+        
+        # Wait for the scheduled timer to fire (60ms)
+        time.sleep(0.08)
+        
+        # The last value (150) should have been executed by the scheduled timer,
+        # but the middle value (100) should have been skipped/throttled!
+        bridge_mock.set_light.assert_called_once_with(1, "bri", 150)
+
+if __name__ == '__main__':
+    unittest.main()
