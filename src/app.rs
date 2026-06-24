@@ -647,6 +647,7 @@ impl HueMIDItyApp {
                                             // Full-width Brightness Slider without name/value text (0 turns OFF)
                                             if light.state.bri.is_some() {
                                                 let mut bri = light.state.bri.unwrap_or(0);
+                                                ui.spacing_mut().slider_width = ui.available_width();
                                                 let slider_res = ui.add_sized(
                                                     egui::vec2(ui.available_width(), 16.0),
                                                     egui::Slider::new(&mut bri, 0..=254).show_value(false),
@@ -738,6 +739,7 @@ impl HueMIDItyApp {
                                             // Full-width Brightness Slider without name/value text (0 turns OFF)
                                             if group.action.bri.is_some() {
                                                 let mut bri = group.action.bri.unwrap_or(0);
+                                                ui.spacing_mut().slider_width = ui.available_width();
                                                 let slider_res = ui.add_sized(
                                                     egui::vec2(ui.available_width(), 16.0),
                                                     egui::Slider::new(&mut bri, 0..=254).show_value(false),
@@ -1071,13 +1073,13 @@ impl HueMIDItyApp {
 
                                     for (event, mapping) in device_mappings.iter() {
                                         // Column 1: Event
-                                        ui.allocate_ui(egui::vec2(col0_w, 20.0), |ui| {
+                                        ui.allocate_ui(egui::vec2(col0_w, 28.0), |ui| {
                                             ui.set_min_width(col0_w);
                                             ui.colored_label(egui::Color32::from_rgb(168, 85, 247), event);
                                         });
 
                                         // Column 2: Target
-                                        ui.allocate_ui(egui::vec2(col1_w, 20.0), |ui| {
+                                        ui.allocate_ui(egui::vec2(col1_w, 28.0), |ui| {
                                             ui.set_min_width(col1_w);
                                             ui.horizontal(|ui| {
                                                 let icon = match mapping.target_type.as_str() {
@@ -1097,19 +1099,19 @@ impl HueMIDItyApp {
                                         });
 
                                         // Column 3: Action
-                                        ui.allocate_ui(egui::vec2(col2_w, 20.0), |ui| {
+                                        ui.allocate_ui(egui::vec2(col2_w, 28.0), |ui| {
                                             ui.set_min_width(col2_w);
                                             ui.label(&mapping.action);
                                         });
 
                                         // Column 4: Edit & Delete
-                                        ui.allocate_ui(egui::vec2(col3_w, 20.0), |ui| {
+                                        ui.allocate_ui(egui::vec2(col3_w, 28.0), |ui| {
                                             ui.set_min_width(col3_w);
                                             ui.horizontal(|ui| {
-                                                if ui.small_button("✏").clicked() {
+                                                if ui.add_sized(egui::vec2(28.0, 24.0), egui::Button::new("✏")).clicked() {
                                                     edit_key = Some(event.clone());
                                                 }
-                                                if ui.small_button("🗑").clicked() {
+                                                if ui.add_sized(egui::vec2(28.0, 24.0), egui::Button::new("🗑")).clicked() {
                                                     delete_key = Some(event.clone());
                                                 }
                                             });
@@ -1219,16 +1221,25 @@ impl HueMIDItyApp {
             return;
         }
 
+        let mut open = true;
         egui::Window::new("Create MIDI Bind")
             .collapsible(false)
             .resizable(false)
+            .open(&mut open)
+            .default_width(380.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
+                let full_width = ui.available_width();
+                ui.style_mut().spacing.button_padding = egui::vec2(12.0, 10.0);
+
                 ui.label(format!("Mapping Event: {}", self.mapping_creator.event_key));
                 ui.add_space(10.0);
 
                 // Target Type
-                egui::ComboBox::from_label("Target Type")
+                ui.label("Target Type");
+                ui.style_mut().spacing.combo_height = 200.0;
+                egui::ComboBox::from_id_salt("target_type_combo")
+                    .width(full_width)
                     .selected_text(&self.mapping_creator.target_type)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut self.mapping_creator.target_type, "light".to_string(), "💡 Light");
@@ -1236,11 +1247,13 @@ impl HueMIDItyApp {
                         ui.selectable_value(&mut self.mapping_creator.target_type, "scene".to_string(), "🎬 Scene");
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(10.0);
 
                 // Target Device List based on type
                 let target_type = self.mapping_creator.target_type.clone();
-                egui::ComboBox::from_label("Select Target")
+                ui.label("Select Target");
+                egui::ComboBox::from_id_salt("select_target_combo")
+                    .width(full_width)
                     .selected_text(if self.mapping_creator.target_id.is_empty() {
                         "Choose Device/Scene..."
                     } else {
@@ -1271,7 +1284,7 @@ impl HueMIDItyApp {
                         }
                     });
 
-                ui.add_space(8.0);
+                ui.add_space(10.0);
 
                 // Filter actions depending on Target capabilities
                 let id = &self.mapping_creator.target_id;
@@ -1303,7 +1316,9 @@ impl HueMIDItyApp {
                 };
 
                 // Action Selector
-                egui::ComboBox::from_label("Action / Property")
+                ui.label("Action / Property");
+                egui::ComboBox::from_id_salt("action_property_combo")
+                    .width(full_width)
                     .selected_text(&self.mapping_creator.action)
                     .show_ui(ui, |ui| {
                         if target_type == "scene" {
@@ -1312,7 +1327,7 @@ impl HueMIDItyApp {
                         } else {
                             ui.selectable_value(&mut self.mapping_creator.action, "On/Off (Latch)".to_string(), "Toggle On/Off (Latch)");
                             ui.selectable_value(&mut self.mapping_creator.action, "On/Off (Momentary)".to_string(), "Toggle On/Off (Momentary)");
-                            
+
                             if capabilities.contains(&Capability::Dim) {
                                 ui.selectable_value(&mut self.mapping_creator.action, "Brightness".to_string(), "Brightness");
                             }
@@ -1330,7 +1345,7 @@ impl HueMIDItyApp {
                     });
 
                 ui.add_space(8.0);
-                
+
                 // Toggle options
                 if target_type != "scene" && !self.mapping_creator.action.starts_with("On/Off") {
                     ui.checkbox(&mut self.mapping_creator.invert, "Invert Control (127 -> Min, 0 -> Max)");
@@ -1339,7 +1354,9 @@ impl HueMIDItyApp {
 
                 ui.add_space(15.0);
 
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(16.0, 10.0);
+
                     if ui.button("Save Mapping").clicked() {
                         if !self.mapping_creator.target_id.is_empty() {
                             let active_device = self.config.selected_device.clone();
@@ -1362,6 +1379,10 @@ impl HueMIDItyApp {
                     }
                 });
             });
+
+        if !open {
+            self.mapping_creator.is_open = false;
+        }
     }
 
     fn draw_widget_modal(&mut self, ctx: &egui::Context) {
@@ -1369,9 +1390,11 @@ impl HueMIDItyApp {
             return;
         }
 
+        let mut open = true;
         egui::Window::new("Add Widgets to Dashboard")
             .collapsible(false)
             .resizable(false)
+            .open(&mut open)
             .default_width(450.0)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
@@ -1507,12 +1530,8 @@ impl HueMIDItyApp {
 
                 ui.add_space(15.0);
 
-                ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.style_mut().spacing.button_padding = egui::vec2(16.0, 10.0);
-
-                    if ui.button("Cancel").clicked() {
-                        self.add_widgets.is_open = false;
-                    }
 
                     if ui.button("Add Selected").clicked() {
                         for id in &self.add_widgets.selected_lights {
@@ -1531,13 +1550,26 @@ impl HueMIDItyApp {
                         self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
                         self.add_widgets.is_open = false;
                     }
+
+                    if ui.button("Cancel").clicked() {
+                        self.add_widgets.is_open = false;
+                    }
                 });
             });
+
+        if !open {
+            self.add_widgets.is_open = false;
+        }
     }
 }
 
 impl eframe::App for HueMIDItyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.style_mut(|style| {
+            style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
+            style.interaction.selectable_labels = false;
+        });
+
         self.check_channels(ctx);
 
         // System tray menu events handler
