@@ -156,6 +156,65 @@ def set_windows_window_icon(hwnd=None):
         print(f"[Windows Icon] Error setting window icon: {e}")
     return False
 
+def sync_autostart(enabled):
+    import sys
+    import os
+    try:
+        if sys.platform == 'win32':
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+            if enabled:
+                executable = sys.executable
+                script_path = os.path.abspath(sys.argv[0])
+                venv_dir = os.path.dirname(executable)
+                pythonw_path = os.path.join(venv_dir, "pythonw.exe")
+                if not os.path.exists(pythonw_path):
+                    pythonw_path = os.path.join(venv_dir, "python.exe")
+                
+                # Double quote path parameters in case there are spaces
+                cmd = f'"{pythonw_path}" "{script_path}"'
+                winreg.SetValueEx(key, "HueMIDIty", 0, winreg.REG_SZ, cmd)
+                print(f"[Autostart] Registry run key synced: {cmd}")
+            else:
+                try:
+                    winreg.DeleteValue(key, "HueMIDIty")
+                    print("[Autostart] Registry run key deleted.")
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        elif sys.platform == 'darwin':
+            plist_path = os.path.expanduser("~/Library/LaunchAgents/com.krets.huemidity.plist")
+            if enabled:
+                executable = sys.executable
+                script_path = os.path.abspath(sys.argv[0])
+                plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.krets.huemidity</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{executable}</string>
+        <string>{script_path}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+                os.makedirs(os.path.dirname(plist_path), exist_ok=True)
+                with open(plist_path, "w", encoding="utf-8") as f:
+                    f.write(plist_content)
+                print(f"[Autostart] macOS plist synced to {plist_path}")
+            else:
+                if os.path.exists(plist_path):
+                    os.remove(plist_path)
+                    print("[Autostart] macOS plist removed.")
+    except Exception as e:
+        print(f"[Autostart] Error syncing autostart: {e}")
+
 # 4. Windows Tray Implementation using pystray
 def setup_windows_tray():
     global win_tray_icon
@@ -282,6 +341,14 @@ class WebviewApi:
     def get_config_path(self):
         return self.cfg.config_path
 
+    def get_autostart(self):
+        return self.cfg.get_autostart()
+
+    def set_autostart(self, enabled):
+        self.cfg.set_autostart(enabled)
+        sync_autostart(enabled)
+        return True
+
     def quit_application(self):
         print("[API] Quit application requested via UI.")
         threading.Thread(target=cleanup_and_exit, daemon=True).start()
@@ -302,6 +369,7 @@ def main():
             
     print("[System] Initializing Managers...")
     config_manager = ConfigManager()
+    sync_autostart(config_manager.get_autostart())
     hue_manager = HueBridgeManager(config_manager)
     midi_manager = MidiManager(config_manager, hue_manager)
     

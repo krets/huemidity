@@ -1,1 +1,5 @@
-__pycache__
+__pycache__/
+.venv/
+config.json
+test_config.json
+ui/temp_icon.ico

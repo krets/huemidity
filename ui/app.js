@@ -336,7 +336,6 @@ function createDeviceCard(device, type, index) {
             <div class="device-controls-row">
                 ${hasDim ? `
                 <div class="slider-control">
-                    <label>Bri</label>
                     <input type="range" id="${type}-${device.id}-bri" min="0" max="254" value="${device.bri}" 
                            oninput="onDeviceBrightnessInput('${type}', '${device.id}', this.value)">
                 </div>
@@ -1009,7 +1008,15 @@ function openSettingsModal() {
     window.pywebview.api.get_config_path().then(path => {
         document.getElementById('settings-config-path').innerText = path || "Unknown";
     });
+    window.pywebview.api.get_autostart().then(enabled => {
+        document.getElementById('settings-autostart').checked = enabled;
+    });
     document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+function onAutostartChanged() {
+    const enabled = document.getElementById('settings-autostart').checked;
+    window.pywebview.api.set_autostart(enabled);
 }
 
 function closeSettingsModal() {
@@ -1019,7 +1026,11 @@ function closeSettingsModal() {
 async function quitApp() {
     const approved = await showCustomConfirm("Completely exit and close HueMIDIty?", "Quit Application");
     if (approved) {
-        window.pywebview.api.quit_application();
+        closeSettingsModal();
+        document.getElementById('shutdown-overlay').classList.remove('hidden');
+        setTimeout(() => {
+            window.pywebview.api.quit_application();
+        }, 150);
     }
 }
 

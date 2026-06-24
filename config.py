@@ -105,3 +105,10 @@ class ConfigManager:
     def set_dashboard_layout(self, layout):
         self.data["dashboard_layout"] = layout
         self.save()
+
+    def get_autostart(self):
+        return self.data.get("autostart", True)
+
+    def set_autostart(self, enabled):
+        self.data["autostart"] = bool(enabled)
+        self.save()
