@@ -33,6 +33,14 @@ pub struct AppConfig {
     pub dashboard_layout: Vec<DashboardItem>,
     #[serde(default)]
     pub mappings: HashMap<String, HashMap<String, Mapping>>, // Device -> (EventKey -> Mapping)
+    #[serde(default)]
+    pub window_x: Option<f32>,
+    #[serde(default)]
+    pub window_y: Option<f32>,
+    #[serde(default)]
+    pub window_width: Option<f32>,
+    #[serde(default)]
+    pub window_height: Option<f32>,
 }
 
 impl AppConfig {

@@ -713,10 +713,19 @@ async fn main() -> Result<(), eframe::Error> {
     // the window is "hidden" and keeps calling update() normally the whole time.
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("HueMIDIty")
-        .with_inner_size([720.0, 480.0])
         .with_min_inner_size([640.0, 400.0])
         .with_active(true)
         .with_visible(true);
+
+    if let (Some(w), Some(h)) = (config.window_width, config.window_height) {
+        viewport = viewport.with_inner_size([w, h]);
+    } else {
+        viewport = viewport.with_inner_size([720.0, 480.0]);
+    }
+
+    if let (Some(x), Some(y)) = (config.window_x, config.window_y) {
+        viewport = viewport.with_position([x, y]);
+    }
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);

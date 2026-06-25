@@ -7,9 +7,9 @@
     <key>CFBundleName</key>
     <string>HueMIDIty</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.2.0</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>HueMIDIty needs access to your local network to connect to the Philips Hue Bridge.</string>
 </dict>

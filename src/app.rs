@@ -285,6 +285,12 @@ pub struct HueMIDItyApp {
     // Cached native window handle, captured on first frame, used to toggle the taskbar
     // button via WS_EX_TOOLWINDOW (see set_taskbar_presence).
     pub hwnd: Option<isize>,
+
+    // Window geometry persistence tracking
+    pub last_saved_pos: Option<egui::Pos2>,
+    pub last_saved_size: Option<egui::Vec2>,
+    pub last_geometry_change: Option<Instant>,
+    pub geometry_checked: bool,
 }
 
 impl HueMIDItyApp {
@@ -360,6 +366,31 @@ impl HueMIDItyApp {
             window_visible: true,
             tray_available,
             hwnd: None,
+            last_saved_pos: None,
+            last_saved_size: None,
+            last_geometry_change: None,
+            geometry_checked: false,
+        }
+    }
+
+    fn save_geometry_immediately(&mut self, ctx: &egui::Context) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let viewport = ctx.input(|i| i.viewport().clone());
+            if let (Some(outer_rect), Some(inner_rect)) = (viewport.outer_rect, viewport.inner_rect) {
+                let is_normal = viewport.minimized != Some(true)
+                    && viewport.maximized != Some(true)
+                    && viewport.fullscreen != Some(true)
+                    && self.window_visible;
+
+                if is_normal {
+                    self.config.window_x = Some(outer_rect.min.x);
+                    self.config.window_y = Some(outer_rect.min.y);
+                    self.config.window_width = Some(inner_rect.size().x);
+                    self.config.window_height = Some(inner_rect.size().y);
+                    self.config.save().ok();
+                }
+            }
         }
     }
 
@@ -607,6 +638,7 @@ impl HueMIDItyApp {
             ui.add_enabled_ui(!any_modal_open, |ui| {
                 ui.horizontal(|ui| {
                     ui.heading("HueMIDIty");
+                    ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(20.0);
 
                     // Tab buttons
@@ -1477,6 +1509,10 @@ impl HueMIDItyApp {
                         ui.label("Hue Bridge IP:");
                         ui.label(&self.config.bridge_ip);
                         ui.end_row();
+
+                        ui.label("App Version:");
+                        ui.label(env!("CARGO_PKG_VERSION"));
+                        ui.end_row();
                     });
 
                 ui.add_space(15.0);
@@ -1555,6 +1591,7 @@ impl HueMIDItyApp {
                     }
 
                     if ui.button("Quit App").clicked() {
+                        self.save_geometry_immediately(ctx);
                         std::process::exit(0);
                     }
                 });
@@ -2041,12 +2078,85 @@ impl eframe::App for HueMIDItyApp {
             }
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.geometry_checked {
+            let viewport = ctx.input(|i| i.viewport().clone());
+            if let (Some(outer_rect), Some(_)) = (viewport.outer_rect, viewport.inner_rect) {
+                let wx = outer_rect.min.x;
+                let wy = outer_rect.min.y;
+                let ww = outer_rect.width();
+                let wh = outer_rect.height();
+
+                if let Ok(displays) = display_info::DisplayInfo::all() {
+                    let mut offscreen = true;
+                    let mut displays_exist = false;
+                    for display in &displays {
+                        displays_exist = true;
+                        let dx = display.x as f32;
+                        let dy = display.y as f32;
+                        let dw = display.width as f32;
+                        let dh = display.height as f32;
+
+                        // Check intersection: window overlaps display
+                        let intersects = wx < dx + dw && wx + ww > dx && wy < dy + dh && wy + wh > dy;
+                        if intersects {
+                            offscreen = false;
+                            break;
+                        }
+                    }
+
+                    if displays_exist && offscreen {
+                        let primary = displays.iter().find(|d| d.is_primary).or_else(|| displays.first());
+                        if let Some(display) = primary {
+                            let new_x = display.x as f32 + (display.width as f32 - ww) / 2.0;
+                            let new_y = display.y as f32 + (display.height as f32 - wh) / 2.0;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(new_x, new_y)));
+                        }
+                    }
+                }
+                self.geometry_checked = true;
+            }
+        }
+
         ctx.style_mut(|style| {
             style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
             style.interaction.selectable_labels = false;
         });
 
         self.check_channels(ctx);
+
+        // Save window geometry periodically on changes, throttled to 1 second of stability
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let viewport = ctx.input(|i| i.viewport().clone());
+            if let (Some(outer_rect), Some(inner_rect)) = (viewport.outer_rect, viewport.inner_rect) {
+                let is_normal = viewport.minimized != Some(true)
+                    && viewport.maximized != Some(true)
+                    && viewport.fullscreen != Some(true)
+                    && self.window_visible;
+
+                if is_normal {
+                    let current_pos = outer_rect.min;
+                    let current_size = inner_rect.size();
+
+                    let pos_changed = Some(current_pos) != self.last_saved_pos;
+                    let size_changed = Some(current_size) != self.last_saved_size;
+
+                    if pos_changed || size_changed {
+                        self.last_saved_pos = Some(current_pos);
+                        self.last_saved_size = Some(current_size);
+                        self.last_geometry_change = Some(Instant::now());
+                    }
+
+                    if let Some(last_change) = self.last_geometry_change {
+                        if last_change.elapsed() >= Duration::from_secs(1) {
+                            self.save_geometry_immediately(ctx);
+                            self.last_geometry_change = None;
+                        }
+                    }
+                }
+            }
+        }
 
         #[cfg(windows)]
         {
@@ -2073,7 +2183,10 @@ impl eframe::App for HueMIDItyApp {
                     } => {
                         match self.show_tray_context_menu(position.x as i32, position.y as i32) {
                             Some(crate::tray::CMD_SHOW_HIDE) => self.toggle_window_visibility(ctx),
-                            Some(crate::tray::CMD_QUIT) => std::process::exit(0),
+                            Some(crate::tray::CMD_QUIT) => {
+                                self.save_geometry_immediately(ctx);
+                                std::process::exit(0);
+                            }
                             _ => {}
                         }
                     }
@@ -2087,6 +2200,7 @@ impl eframe::App for HueMIDItyApp {
         // app. If the tray failed to initialize, there'd be no way to bring the window
         // back, so quit outright in that case instead.
         if ctx.input(|i| i.viewport().close_requested()) {
+            self.save_geometry_immediately(ctx);
             if self.tray_available {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.window_visible = false;
