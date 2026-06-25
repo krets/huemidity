@@ -1156,7 +1156,7 @@ impl HueMIDItyApp {
         let col_width = (total_width - spacing) / 2.0;
         let available_height = ui.available_height();
 
-        egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+        egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
         ui.set_width(total_width);
         ui.set_height(available_height);
         ui.horizontal(|ui| {
@@ -1458,11 +1458,19 @@ impl HueMIDItyApp {
 
                 let mut forget_clicked = false;
                 ui.scope(|ui| {
-                    let danger_color = egui::Color32::from_rgb(0x3d, 0x3d, 0x3b);
+                    let danger_color = egui::Color32::from_rgb(0xff, 0x33, 0x66);
+                    let danger_fill = egui::Color32::from_rgb(0x1d, 0x1b, 0x23);
+                    let danger_fill_hovered = egui::Color32::from_rgb(0x22, 0x20, 0x27);
+                    ui.style_mut().visuals.widgets.inactive.bg_fill = danger_fill;
+                    ui.style_mut().visuals.widgets.inactive.weak_bg_fill = danger_fill;
+                    ui.style_mut().visuals.widgets.hovered.bg_fill = danger_fill_hovered;
+                    ui.style_mut().visuals.widgets.hovered.weak_bg_fill = danger_fill_hovered;
                     ui.style_mut().visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, danger_color);
                     ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, danger_color);
                     ui.style_mut().visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, danger_color);
                     ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, danger_color);
+                    ui.style_mut().visuals.widgets.hovered.expansion = 0.0;
+                    ui.style_mut().spacing.button_padding = egui::vec2(12.0, 8.0);
                     if ui.button("🗑 Forget Hue Bridge").clicked() {
                         forget_clicked = true;
                     }
