@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 // Stable command ids returned by the hand-rolled right-click popup menu in app.rs.

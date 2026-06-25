@@ -3,6 +3,7 @@
 mod config;
 mod hue;
 mod midi;
+#[cfg(windows)]
 mod tray;
 mod app;
 
@@ -740,8 +741,7 @@ async fn main() -> Result<(), eframe::Error> {
             app::setup_custom_theme(&cc.egui_ctx);
 
             // 4. Setup System Tray
-            // This MUST be run inside the run_native closure on macOS (and is safe on Windows)
-            // because AppKit/Cocoa's application connection needs to be initialized first.
+            #[cfg(windows)]
             let tray = match tray::setup_tray() {
                 Ok(t) => Some(t),
                 Err(e) => {
@@ -749,17 +749,22 @@ async fn main() -> Result<(), eframe::Error> {
                     None
                 }
             };
+            #[cfg(not(windows))]
+            let tray: Option<()> = None;
 
             // Tray icon clicks and menu selections arrive on background channels that
             // egui's own reactive repaint scheduling doesn't know about, so nothing
             // would prompt update() to run and drain them otherwise. A plain OS thread
             // ticking independently guarantees they get picked up promptly regardless
             // of window visibility.
-            let ctx_ticker = cc.egui_ctx.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(Duration::from_millis(100));
-                ctx_ticker.request_repaint();
-            });
+            #[cfg(windows)]
+            {
+                let ctx_ticker = cc.egui_ctx.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(Duration::from_millis(100));
+                    ctx_ticker.request_repaint();
+                });
+            }
 
             // Spawn background task now that we have the Context
             let ctx_clone = cc.egui_ctx.clone();
@@ -778,6 +783,7 @@ async fn main() -> Result<(), eframe::Error> {
             );
 
             // Keep reference to tray icon alive so it doesn't get dropped
+            #[cfg(windows)]
             if let Some(t) = tray {
                 // We can leak it or store it in window/app state.
                 // Leaking is perfectly fine for application lifetime!

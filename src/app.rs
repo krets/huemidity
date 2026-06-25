@@ -2017,11 +2017,7 @@ impl HueMIDItyApp {
         }
     }
 
-    #[cfg(not(windows))]
-    fn show_tray_context_menu(&self, _x: i32, _y: i32) -> Option<u32> {
-        None
-    }
-
+    #[cfg(windows)]
     fn toggle_window_visibility(&mut self, ctx: &egui::Context) {
         self.window_visible = !self.window_visible;
         // Order matters: drop the taskbar button before minimizing so it doesn't
@@ -2052,34 +2048,37 @@ impl eframe::App for HueMIDItyApp {
 
         self.check_channels(ctx);
 
-        // Tray icon events. A single left-click toggles the window - react on the
-        // button-up transition only, since mouse-down and mouse-up each produce their
-        // own Click event and reacting to both would toggle twice (net no-op). A
-        // right-click shows our own hand-rolled popup menu (see show_tray_context_menu)
-        // rather than relying on tray-icon/muda's built-in menu display, which turned
-        // out to never deliver a usable event back on at least one real machine.
-        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            match event {
-                tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    button_state: tray_icon::MouseButtonState::Up,
-                    ..
-                } => {
-                    self.toggle_window_visibility(ctx);
-                }
-                tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Right,
-                    button_state: tray_icon::MouseButtonState::Up,
-                    position,
-                    ..
-                } => {
-                    match self.show_tray_context_menu(position.x as i32, position.y as i32) {
-                        Some(crate::tray::CMD_SHOW_HIDE) => self.toggle_window_visibility(ctx),
-                        Some(crate::tray::CMD_QUIT) => std::process::exit(0),
-                        _ => {}
+        #[cfg(windows)]
+        {
+            // Tray icon events. A single left-click toggles the window - react on the
+            // button-up transition only, since mouse-down and mouse-up each produce their
+            // own Click event and reacting to both would toggle twice (net no-op). A
+            // right-click shows our own hand-rolled popup menu (see show_tray_context_menu)
+            // rather than relying on tray-icon/muda's built-in menu display, which turned
+            // out to never deliver a usable event back on at least one real machine.
+            while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+                match event {
+                    tray_icon::TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Left,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        ..
+                    } => {
+                        self.toggle_window_visibility(ctx);
                     }
+                    tray_icon::TrayIconEvent::Click {
+                        button: tray_icon::MouseButton::Right,
+                        button_state: tray_icon::MouseButtonState::Up,
+                        position,
+                        ..
+                    } => {
+                        match self.show_tray_context_menu(position.x as i32, position.y as i32) {
+                            Some(crate::tray::CMD_SHOW_HIDE) => self.toggle_window_visibility(ctx),
+                            Some(crate::tray::CMD_QUIT) => std::process::exit(0),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
