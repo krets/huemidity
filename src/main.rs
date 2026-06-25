@@ -13,6 +13,7 @@ use midi::MidiListener;
 use app::{GuiMessage, BgMessage, HueMIDItyApp};
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender as Sender, UnboundedReceiver as Receiver};
 
@@ -701,17 +702,20 @@ async fn main() -> Result<(), eframe::Error> {
     let (gui_tx, gui_rx) = unbounded_channel();
     let (bg_tx, bg_rx) = unbounded_channel();
 
-    // 4. Setup eframe options
-    let mut viewport = egui::ViewportBuilder::default()
-        .with_title("HueMIDIty")
-        .with_inner_size([720.0, 480.0])
-        .with_min_inner_size([640.0, 400.0])
-        .with_active(true)
+    // 4. Setup eframe options. The root viewport is a permanently invisible, taskbar-less
+    // "ghost" window - see the doc comment on app::RootApp for why: a window that's
+    // genuinely hidden/minimized stops receiving paint events on Windows, which would
+    // starve the update loop of any chance to ever show it again. The real app window is
+    // a deferred child viewport created on demand (also see RootApp), so it can be fully
+    // destroyed (no taskbar entry) and recreated from scratch rather than hidden.
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1.0, 1.0])
+        .with_position([-32000.0, -32000.0])
+        .with_decorations(false)
+        .with_taskbar(false)
         .with_visible(true);
 
-    if let Some(icon) = load_icon() {
-        viewport = viewport.with_icon(icon);
-    }
+    let icon = load_icon().map(Arc::new);
 
     let options = eframe::NativeOptions {
         viewport,
@@ -758,7 +762,9 @@ async fn main() -> Result<(), eframe::Error> {
                 run_bg_worker(conf_clone, bg_rx, gui_tx_clone, bg_tx_self, ctx_clone).await;
             });
 
-            // Create App instance
+            // Create App instance, shared between the root viewport's update() (which
+            // handles tray events) and the deferred child viewport's draw callback
+            // (which renders the actual UI) - see app::RootApp.
             let app = HueMIDItyApp::new(
                 config,
                 gui_rx,
@@ -775,7 +781,8 @@ async fn main() -> Result<(), eframe::Error> {
                 Box::leak(Box::new(t));
             }
 
-            Ok(Box::new(app) as Box<dyn eframe::App>)
+            let root_app = app::RootApp::new(Arc::new(Mutex::new(app)), icon);
+            Ok(Box::new(root_app) as Box<dyn eframe::App>)
         }),
     )
 }
