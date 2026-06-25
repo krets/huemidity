@@ -1154,12 +1154,14 @@ impl HueMIDItyApp {
         let min_total_width = 800.0;
         let total_width = ui.available_width().max(min_total_width);
         let col_width = (total_width - spacing) / 2.0;
-        let available_height = ui.available_height();
+        let available_height = ui.available_height() - 8.0;
 
         egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| {
-        ui.set_width(total_width);
-        ui.set_height(available_height);
-        ui.horizontal(|ui| {
+        ui.allocate_ui(egui::vec2(total_width, available_height), |ui| {
+        // `horizontal_centered` (unlike plain `horizontal`) reserves the full available
+        // height up front instead of growing to fit content, so the columns below can
+        // actually stretch to match the window instead of being clamped to one line's height.
+        ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = spacing;
 
             // Column 1 Frame: MIDI Inputs
@@ -1391,6 +1393,7 @@ impl HueMIDItyApp {
                     });
                 });
             });
+        });
         });
         });
     }
