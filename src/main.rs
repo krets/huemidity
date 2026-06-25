@@ -108,7 +108,7 @@ async fn run_bg_worker(
     } else if !config.bridge_ip.is_empty() {
         BridgeConnectionState::NeedsLink {
             ip: config.bridge_ip.clone(),
-            countdown: 30,
+            countdown: 120,
         }
     } else {
         BridgeConnectionState::Searching
@@ -268,7 +268,7 @@ async fn run_bg_worker(
                         match hue_client.discover_bridges().await {
                             Ok(ips) => {
                                 if let Some(ip) = ips.first() {
-                                    connection_state = BridgeConnectionState::NeedsLink { ip: ip.clone(), countdown: 30 };
+                                    connection_state = BridgeConnectionState::NeedsLink { ip: ip.clone(), countdown: 120 };
                                     config.bridge_ip = ip.clone();
                                     config.save().ok();
                                 } else {
@@ -284,9 +284,15 @@ async fn run_bg_worker(
                     }
 
                     BgMessage::ConnectManual(ip) => {
-                        connection_state = BridgeConnectionState::NeedsLink { ip: ip.clone(), countdown: 30 };
+                        connection_state = BridgeConnectionState::NeedsLink { ip: ip.clone(), countdown: 120 };
                         config.bridge_ip = ip;
                         config.save().ok();
+                        gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
+                        ctx.request_repaint();
+                    }
+
+                    BgMessage::CancelLink => {
+                        connection_state = BridgeConnectionState::Idle;
                         gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
                         ctx.request_repaint();
                     }

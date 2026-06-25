@@ -4,6 +4,20 @@ use crate::hue::BridgeConnectionState;
 use crate::hue::types::{Light, Group, Scene, Capability};
 use crate::midi::{MidiEvent, get_midi_ports};
 
+// egui ships without a bold font variant, so fake bold by overdrawing the glyphs
+// with a tiny horizontal offset a few times to thicken the strokes.
+fn draw_bold_text(ui: &mut egui::Ui, text: &str, size: f32, color: egui::Color32) {
+    let font_id = egui::FontId::proportional(size);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font_id, color);
+    let extra = 0.8;
+    let desired_size = galley.size() + egui::vec2(extra, 0.0);
+    let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+    let painter = ui.painter();
+    for dx in [0.0, extra * 0.5, extra] {
+        painter.galley(rect.min + egui::vec2(dx, 0.0), galley.clone(), color);
+    }
+}
+
 pub fn setup_custom_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     
@@ -130,6 +144,7 @@ pub enum GuiMessage {
 pub enum BgMessage {
     ConnectManual(String),
     StartAutoDiscovery,
+    CancelLink,
     ForgetBridge,
     RefreshDevices,
     SetLightState {
@@ -163,7 +178,6 @@ pub enum BgMessage {
 pub enum Tab {
     Dashboard,
     MidiMapping,
-    Settings,
 }
 
 pub struct LogEntry {
@@ -190,6 +204,24 @@ pub struct AddWidgetsState {
     pub selected_groups: HashSet<String>,
 }
 
+pub struct SettingsState {
+    pub is_open: bool,
+}
+
+#[derive(Clone)]
+pub enum ConfirmAction {
+    ForgetBridge,
+    RemoveDashboardItem(usize),
+    RemoveMapping(String),
+}
+
+pub struct ConfirmDialogState {
+    pub is_open: bool,
+    pub title: String,
+    pub message: String,
+    pub action: Option<ConfirmAction>,
+}
+
 pub struct HueMIDItyApp {
     // Communication channels
     pub gui_rx: Receiver<GuiMessage>,
@@ -213,6 +245,11 @@ pub struct HueMIDItyApp {
     // Modal state
     pub mapping_creator: MappingCreatorState,
     pub add_widgets: AddWidgetsState,
+    pub settings: SettingsState,
+    pub confirm_dialog: ConfirmDialogState,
+
+    // Cached textures
+    pub app_icon_texture: Option<egui::TextureHandle>,
 
     // Tray Menu IDs
     pub tray_show_hide_id: String,
@@ -247,7 +284,7 @@ impl HueMIDItyApp {
         } else if !config.bridge_ip.is_empty() {
             BridgeConnectionState::NeedsLink {
                 ip: config.bridge_ip.clone(),
-                countdown: 30,
+                countdown: 120,
             }
         } else {
             bg_tx.send(BgMessage::StartAutoDiscovery).ok();
@@ -286,6 +323,16 @@ impl HueMIDItyApp {
                 selected_lights: HashSet::new(),
                 selected_groups: HashSet::new(),
             },
+            settings: SettingsState {
+                is_open: false,
+            },
+            confirm_dialog: ConfirmDialogState {
+                is_open: false,
+                title: String::new(),
+                message: String::new(),
+                action: None,
+            },
+            app_icon_texture: None,
             tray_show_hide_id,
             tray_quit_id,
             last_port_refresh: Instant::now(),
@@ -374,97 +421,152 @@ impl HueMIDItyApp {
         }
     }
 
+    fn ensure_app_icon(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        if self.app_icon_texture.is_none() {
+            let icon_bytes = include_bytes!("../resources/icon_512.png");
+            if let Ok(img) = image::load_from_memory_with_format(icon_bytes, image::ImageFormat::Png) {
+                let img = img.to_rgba8();
+                let size = [img.width() as usize, img.height() as usize];
+                let pixels = img.into_raw();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                self.app_icon_texture = Some(ctx.load_texture("app_icon", color_image, egui::TextureOptions::default()));
+            }
+        }
+        self.app_icon_texture.clone()
+    }
+
     pub fn draw_onboarding(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let icon_texture = self.ensure_app_icon(ctx);
+        let body_text_color = egui::Color32::from_rgb(214, 214, 222);
+        let accent_color = egui::Color32::from_rgb(168, 85, 247);
+
+        let panel_frame = egui::Frame::default().fill(egui::Color32::from_rgb(12, 12, 14));
+        egui::CentralPanel::default().frame(panel_frame).show(ctx, |ui| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(80.0);
-                
-                // Pulsing title / icon
-                ui.heading(
-                    egui::RichText::new("HueMIDIty")
-                        .size(36.0)
-                        .color(egui::Color32::from_rgb(168, 85, 247))
-                        .strong()
-                );
-                ui.label("Bind physical MIDI inputs to Philips Hue lighting controls.");
                 ui.add_space(40.0);
 
-                match &self.connection_state {
-                    BridgeConnectionState::Searching => {
-                        ui.add(egui::Spinner::new().size(32.0));
-                        ui.add_space(20.0);
-                        ui.label("Searching for Philips Hue Bridge on your local network...");
-                        ui.add_space(30.0);
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(26, 26, 30))
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(46, 46, 52)))
+                    .corner_radius(egui::CornerRadius::same(14))
+                    .inner_margin(egui::Margin::symmetric(36, 36))
+                    .show(ui, |ui| {
+                        ui.set_width(360.0);
+                        ui.style_mut().spacing.button_padding = egui::vec2(18.0, 10.0);
 
-                        if ui.button("Enter IP Manually").clicked() {
-                            self.connection_state = BridgeConnectionState::Idle;
-                        }
-                    }
-                    BridgeConnectionState::Idle => {
-                        ui.label("Enter the IP address of your Philips Hue Bridge:");
-                        ui.add_space(10.0);
+                        ui.vertical_centered(|ui| {
+                            if let Some(tex) = &icon_texture {
+                                ui.add(egui::Image::new(tex).max_width(72.0).max_height(72.0));
+                                ui.add_space(14.0);
+                            }
 
-                        ui.horizontal(|ui| {
-                            ui.shrink_width_to_current();
-                            ui.add_space(ui.available_width() / 4.0);
-                            ui.text_edit_singleline(&mut self.manual_ip_input);
-                        });
+                            draw_bold_text(ui, "HueMIDIty", 30.0, accent_color);
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Bind physical MIDI inputs to Philips Hue lighting controls.")
+                                    .color(body_text_color),
+                            );
+                            ui.add_space(32.0);
 
-                        ui.add_space(20.0);
-                        ui.horizontal(|ui| {
-                            ui.shrink_width_to_current();
-                            ui.add_space(ui.available_width() / 3.0);
-                            if ui.button("Connect").clicked() {
-                                if !self.manual_ip_input.is_empty() {
-                                    self.bg_tx.send(BgMessage::ConnectManual(self.manual_ip_input.trim().to_string())).ok();
+                            match &self.connection_state {
+                                BridgeConnectionState::Searching => {
+                                    ui.add(egui::Spinner::new().size(32.0));
+                                    ui.add_space(20.0);
+                                    ui.label(
+                                        egui::RichText::new("Searching for Philips Hue Bridge on your local network...")
+                                            .color(body_text_color),
+                                    );
+                                    ui.add_space(30.0);
+
+                                    if ui.button("Enter IP Manually").clicked() {
+                                        self.connection_state = BridgeConnectionState::Idle;
+                                    }
                                 }
-                            }
-                            if ui.button("Auto-Discover Again").clicked() {
-                                self.bg_tx.send(BgMessage::StartAutoDiscovery).ok();
-                                self.connection_state = BridgeConnectionState::Searching;
+                                BridgeConnectionState::Idle => {
+                                    ui.label(
+                                        egui::RichText::new("Enter the IP address of your Philips Hue Bridge:")
+                                            .color(body_text_color),
+                                    );
+                                    ui.add_space(10.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut self.manual_ip_input)
+                                                .desired_width(220.0)
+                                                .hint_text("e.g. 192.168.1.10"),
+                                        );
+                                    });
+
+                                    ui.add_space(20.0);
+                                    ui.vertical_centered_justified(|ui| {
+                                        let connect_btn = egui::Button::new(
+                                            egui::RichText::new("Connect").color(egui::Color32::WHITE).strong(),
+                                        ).fill(accent_color);
+                                        if ui.add(connect_btn).clicked() {
+                                            if !self.manual_ip_input.is_empty() {
+                                                self.bg_tx.send(BgMessage::ConnectManual(self.manual_ip_input.trim().to_string())).ok();
+                                            }
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        if ui.button("Auto-Discover Again").clicked() {
+                                            self.bg_tx.send(BgMessage::StartAutoDiscovery).ok();
+                                            self.connection_state = BridgeConnectionState::Searching;
+                                        }
+                                    });
+                                }
+                                BridgeConnectionState::NeedsLink { ip, countdown } => {
+                                    // Display pulsing lock button message
+                                    ui.heading(
+                                        egui::RichText::new("Authentication Required")
+                                            .color(egui::Color32::from_rgb(253, 224, 71))
+                                            .strong()
+                                    );
+                                    ui.add_space(15.0);
+                                    ui.label(
+                                        egui::RichText::new("Press the physical Link Button on your Hue Bridge now to connect.")
+                                            .size(16.0)
+                                            .color(body_text_color),
+                                    );
+                                    ui.add_space(20.0);
+
+                                    // ProgressBar countdown
+                                    let progress = *countdown as f32 / 120.0;
+                                    ui.add(egui::ProgressBar::new(progress).text(format!("{} seconds remaining", countdown)));
+                                    ui.add_space(15.0);
+                                    ui.label(
+                                        egui::RichText::new(format!("Bridge IP: {}", ip)).color(body_text_color),
+                                    );
+
+                                    ui.add_space(20.0);
+                                    if ui.button("Cancel").clicked() {
+                                        self.bg_tx.send(BgMessage::CancelLink).ok();
+                                        self.connection_state = BridgeConnectionState::Idle;
+                                    }
+                                }
+                                BridgeConnectionState::Error(err) => {
+                                    ui.colored_label(egui::Color32::from_rgb(239, 68, 68), "Connection Error");
+                                    ui.label(
+                                        egui::RichText::new(format!("Unable to connect to the Hue Bridge: {}", err))
+                                            .color(body_text_color),
+                                    );
+                                    ui.add_space(20.0);
+
+                                    if ui.button("Retry Auto-Discovery").clicked() {
+                                        self.bg_tx.send(BgMessage::StartAutoDiscovery).ok();
+                                        self.connection_state = BridgeConnectionState::Searching;
+                                    }
+                                    if ui.button("Enter IP Manually").clicked() {
+                                        self.connection_state = BridgeConnectionState::Idle;
+                                    }
+                                }
+                                _ => {}
                             }
                         });
-                    }
-                    BridgeConnectionState::NeedsLink { ip, countdown } => {
-                        // Display pulsing lock button message
-                        ui.heading(
-                            egui::RichText::new("Authentication Required")
-                                .color(egui::Color32::from_rgb(253, 224, 71))
-                                .strong()
-                        );
-                        ui.add_space(15.0);
-                        ui.label(
-                            egui::RichText::new("Press the physical Link Button on your Hue Bridge now to connect.")
-                                .size(16.0)
-                        );
-                        ui.add_space(20.0);
-                        
-                        // ProgressBar countdown
-                        let progress = *countdown as f32 / 30.0;
-                        ui.add(egui::ProgressBar::new(progress).text(format!("{} seconds remaining", countdown)));
-                        ui.add_space(15.0);
-                        ui.label(format!("Bridge IP: {}", ip));
-
-                        ui.add_space(20.0);
-                        if ui.button("Back / Change IP").clicked() {
-                            self.connection_state = BridgeConnectionState::Idle;
-                        }
-                    }
-                    BridgeConnectionState::Error(err) => {
-                        ui.colored_label(egui::Color32::from_rgb(239, 68, 68), "Connection Error");
-                        ui.label(format!("Unable to connect to the Hue Bridge: {}", err));
-                        ui.add_space(20.0);
-
-                        if ui.button("Retry Auto-Discovery").clicked() {
-                            self.bg_tx.send(BgMessage::StartAutoDiscovery).ok();
-                            self.connection_state = BridgeConnectionState::Searching;
-                        }
-                        if ui.button("Enter IP Manually").clicked() {
-                            self.connection_state = BridgeConnectionState::Idle;
-                        }
-                    }
-                    _ => {}
-                }
+                    });
+            });
             });
         });
     }
@@ -476,7 +578,7 @@ impl HueMIDItyApp {
             self.last_port_refresh = Instant::now();
         }
 
-        let any_modal_open = self.add_widgets.is_open || self.mapping_creator.is_open;
+        let any_modal_open = self.add_widgets.is_open || self.mapping_creator.is_open || self.settings.is_open || self.confirm_dialog.is_open;
 
         // Top panel header
         egui::TopBottomPanel::top("top_header").show(ctx, |ui| {
@@ -488,7 +590,9 @@ impl HueMIDItyApp {
                     // Tab buttons
                     ui.selectable_value(&mut self.active_tab, Tab::Dashboard, "📋 Dashboard");
                     ui.selectable_value(&mut self.active_tab, Tab::MidiMapping, "🎹 MIDI Mapping");
-                    ui.selectable_value(&mut self.active_tab, Tab::Settings, "⚙ Settings");
+                    if ui.button("⚙ Settings").clicked() {
+                        self.settings.is_open = true;
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Refresh button
@@ -522,7 +626,6 @@ impl HueMIDItyApp {
                 match self.active_tab {
                     Tab::Dashboard => self.draw_dashboard_tab(ui),
                     Tab::MidiMapping => self.draw_midi_mapping_tab(ui),
-                    Tab::Settings => self.draw_settings_tab(ui),
                 }
             });
 
@@ -535,6 +638,95 @@ impl HueMIDItyApp {
         // Modals
         self.draw_mapping_modal(ctx);
         self.draw_widget_modal(ctx);
+        self.draw_settings_modal(ctx);
+        self.draw_confirm_dialog(ctx);
+    }
+
+    fn request_confirm(&mut self, title: &str, message: &str, action: ConfirmAction) {
+        self.confirm_dialog.is_open = true;
+        self.confirm_dialog.title = title.to_string();
+        self.confirm_dialog.message = message.to_string();
+        self.confirm_dialog.action = Some(action);
+    }
+
+    fn draw_confirm_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_dialog.is_open {
+            return;
+        }
+
+        // Full-screen dimming overlay, above any other modal, to make this dialog block everything.
+        egui::Area::new(egui::Id::new("confirm_dialog_overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                let screen_rect = ctx.content_rect();
+                ui.allocate_rect(screen_rect, egui::Sense::click());
+                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(180));
+            });
+
+        let mut open = true;
+        egui::Window::new(&self.confirm_dialog.title)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .order(egui::Order::Foreground)
+            .default_width(360.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(&self.confirm_dialog.message);
+                ui.add_space(16.0);
+
+                let full_width = ui.available_width();
+                ui.allocate_ui_with_layout(egui::vec2(full_width, 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(12.0, 6.0);
+                    ui.style_mut().spacing.item_spacing.y = 0.0;
+
+                    if ui.button("Cancel").clicked() {
+                        self.confirm_dialog.is_open = false;
+                        self.confirm_dialog.action = None;
+                    }
+
+                    let danger_color = egui::Color32::from_rgb(239, 68, 68);
+                    let confirm_btn = egui::Button::new(egui::RichText::new("Confirm").color(egui::Color32::WHITE))
+                        .fill(egui::Color32::from_rgb(127, 29, 29))
+                        .stroke(egui::Stroke::new(1.0, danger_color));
+                    if ui.add(confirm_btn).clicked() {
+                        if let Some(action) = self.confirm_dialog.action.take() {
+                            match action {
+                                ConfirmAction::ForgetBridge => {
+                                    self.bg_tx.send(BgMessage::ForgetBridge).ok();
+                                    self.config.bridge_ip.clear();
+                                    self.config.bridge_username.clear();
+                                    self.config.save().ok();
+                                    self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+                                    self.connection_state = BridgeConnectionState::Idle;
+                                }
+                                ConfirmAction::RemoveDashboardItem(idx) => {
+                                    if idx < self.config.dashboard_layout.len() {
+                                        self.config.dashboard_layout.remove(idx);
+                                        self.config.save().ok();
+                                        self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+                                    }
+                                }
+                                ConfirmAction::RemoveMapping(key) => {
+                                    let device = self.config.selected_device.clone();
+                                    if let Some(maps) = self.config.mappings.get_mut(&device) {
+                                        maps.remove(&key);
+                                        self.config.save().ok();
+                                        self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+                                    }
+                                }
+                            }
+                        }
+                        self.confirm_dialog.is_open = false;
+                    }
+                });
+            });
+
+        if !open {
+            self.confirm_dialog.is_open = false;
+            self.confirm_dialog.action = None;
+        }
     }
 
     fn draw_dashboard_tab(&mut self, ui: &mut egui::Ui) {
@@ -575,7 +767,6 @@ impl HueMIDItyApp {
             egui::Grid::new("dashboard_grid")
                 .spacing(egui::vec2(spacing_x, 12.0))
                 .show(ui, |ui| {
-                    let mut remove_index = None;
                     let mut swap_indices = None;
                     
                     for (idx, item) in layout_items.iter().enumerate() {
@@ -624,7 +815,11 @@ impl HueMIDItyApp {
                                                 ui.style_mut().visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(140, 140, 160));
                                                 ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::NONE;
                                                 if ui.button("×").clicked() {
-                                                    remove_index = Some(idx);
+                                                    self.request_confirm(
+                                                        "Remove Widget?",
+                                                        &format!("Remove \"{}\" from the dashboard? You can add it back later from Add Widgets.", name),
+                                                        ConfirmAction::RemoveDashboardItem(idx),
+                                                    );
                                                 }
                                             });
                                         });
@@ -899,10 +1094,6 @@ impl HueMIDItyApp {
                         }
                     }
 
-                    if let Some(idx) = remove_index {
-                        self.config.dashboard_layout.remove(idx);
-                        self.config.save().ok();
-                    }
                     if let Some((i1, i2)) = swap_indices {
                         self.config.dashboard_layout.swap(i1, i2);
                         self.config.save().ok();
@@ -958,9 +1149,16 @@ impl HueMIDItyApp {
 
     fn draw_midi_mapping_tab(&mut self, ui: &mut egui::Ui) {
         let spacing = 16.0;
-        let total_width = ui.available_width(); // Stretch symmetric to both edges
+        // Below this width the two columns' contents start clipping, so keep them at
+        // their natural size and let a horizontal scrollbar appear instead of cutting them off.
+        let min_total_width = 800.0;
+        let total_width = ui.available_width().max(min_total_width);
         let col_width = (total_width - spacing) / 2.0;
+        let available_height = ui.available_height();
 
+        egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+        ui.set_width(total_width);
+        ui.set_height(available_height);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = spacing;
 
@@ -1026,12 +1224,14 @@ impl HueMIDItyApp {
                         ui.heading("Activity Log");
                         ui.add_space(5.0);
 
-                        // Activity log canvas
+                        // Activity log canvas - fills the remaining height of the column
+                        // instead of staying pinned to a fixed minimum.
+                        let log_height = ui.available_height();
                         egui::Frame::dark_canvas(ui.style())
                             .fill(egui::Color32::from_rgb(8, 10, 18))
                             .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(ui.available_width(), 160.0));
-                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                ui.set_min_size(egui::vec2(ui.available_width(), log_height.max(160.0)));
+                                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                                     if self.midi_log.is_empty() {
                                         ui.centered_and_justified(|ui| {
                                             ui.weak("No MIDI messages received yet. Move a knob/slider or press a key.");
@@ -1075,14 +1275,16 @@ impl HueMIDItyApp {
                         ui.add_space(10.0);
 
                         let selected_device = self.config.selected_device.clone();
-                        let device_mappings = self.config.mappings.entry(selected_device.clone()).or_insert_with(HashMap::new);
+                        let device_mappings: HashMap<String, Mapping> = self.config.mappings
+                            .get(&selected_device)
+                            .cloned()
+                            .unwrap_or_default();
 
                         if device_mappings.is_empty() {
                             ui.weak("No mappings configured for this controller. Press 'Bind' in the Activity Log to create one.");
                             return;
                         }
 
-                        let mut delete_key = None;
                         let mut edit_key = None;
 
                         let table_width = inner_w - 50.0; // Subtract padding/scrollbar
@@ -1092,7 +1294,7 @@ impl HueMIDItyApp {
                         let col1_w = remaining * 0.40;
                         let col2_w = remaining * 0.35;
 
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                             egui::Grid::new("active_mappings_table")
                                 .num_columns(4)
                                 .spacing(egui::vec2(12.0, 10.0))
@@ -1159,7 +1361,11 @@ impl HueMIDItyApp {
                                                     edit_key = Some(event.clone());
                                                 }
                                                 if ui.add_sized(egui::vec2(24.0, 24.0), egui::Button::new("🗑").frame(false)).clicked() {
-                                                    delete_key = Some(event.clone());
+                                                    self.request_confirm(
+                                                        "Delete MIDI Bind?",
+                                                        &format!("Remove the binding for \"{}\"? This cannot be undone.", event),
+                                                        ConfirmAction::RemoveMapping(event.clone()),
+                                                    );
                                                 }
                                             });
                                         });
@@ -1168,14 +1374,6 @@ impl HueMIDItyApp {
                                     }
                                 });
                         });
-
-                        if let Some(key) = delete_key {
-                            if let Some(maps) = self.config.mappings.get_mut(&selected_device) {
-                                maps.remove(&key);
-                                self.config.save().ok();
-                                self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-                            }
-                        }
 
                         if let Some(key) = edit_key {
                             if let Some(maps) = self.config.mappings.get(&selected_device) {
@@ -1194,72 +1392,107 @@ impl HueMIDItyApp {
                 });
             });
         });
+        });
     }
 
-    fn draw_settings_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Settings");
-        ui.add_space(20.0);
+    fn draw_settings_modal(&mut self, ctx: &egui::Context) {
+        if !self.settings.is_open {
+            return;
+        }
 
-        egui::Grid::new("settings_grid")
-            .spacing(egui::vec2(10.0, 15.0))
-            .show(ui, |ui| {
-                ui.label("Hue Bridge IP:");
-                ui.label(&self.config.bridge_ip);
-                ui.end_row();
+        let mut open = true;
+        egui::Window::new("Settings")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .default_width(420.0)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                let full_width = ui.available_width();
 
-                ui.label("Registered Username:");
-                ui.label(if self.config.bridge_username.is_empty() { "None" } else { &self.config.bridge_username });
-                ui.end_row();
+                egui::Grid::new("settings_grid")
+                    .spacing(egui::vec2(10.0, 15.0))
+                    .show(ui, |ui| {
+                        ui.label("Hue Bridge IP:");
+                        ui.label(&self.config.bridge_ip);
+                        ui.end_row();
+                    });
+
+                ui.add_space(15.0);
 
                 ui.label("Configuration Path:");
+                ui.add_space(2.0);
                 if let Some(path) = AppConfig::get_config_path() {
                     ui.weak(path.to_string_lossy().to_string());
                 } else {
                     ui.weak("In-Memory Only");
                 }
-                ui.end_row();
-            });
 
-        ui.add_space(30.0);
-        
-        let mut autostart = self.config.autostart;
-        if ui.checkbox(&mut autostart, "Launch on Startup").changed() {
-            self.config.autostart = autostart;
-            self.config.save().ok();
-            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-            
-            // Integrate auto-launch crate trigger here
-            if let Some(path) = std::env::current_exe().ok() {
-                let app_path = path.to_string_lossy();
-                let auto = auto_launch::AutoLaunchBuilder::new()
-                    .set_app_name("HueMIDIty")
-                    .set_app_path(&app_path)
-                    .set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent)
-                    .build();
-                if let Ok(auto) = auto {
-                    if autostart {
-                        auto.enable().ok();
-                    } else {
-                        auto.disable().ok();
+                ui.add_space(20.0);
+
+                let mut autostart = self.config.autostart;
+                if ui.checkbox(&mut autostart, "Launch on Startup").changed() {
+                    self.config.autostart = autostart;
+                    self.config.save().ok();
+                    self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
+
+                    // Integrate auto-launch crate trigger here
+                    if let Some(path) = std::env::current_exe().ok() {
+                        let app_path = path.to_string_lossy();
+                        let auto = auto_launch::AutoLaunchBuilder::new()
+                            .set_app_name("HueMIDIty")
+                            .set_app_path(&app_path)
+                            .set_macos_launch_mode(auto_launch::MacOSLaunchMode::LaunchAgent)
+                            .build();
+                        if let Ok(auto) = auto {
+                            if autostart {
+                                auto.enable().ok();
+                            } else {
+                                auto.disable().ok();
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        ui.add_space(40.0);
+                ui.add_space(10.0);
 
-        if ui.button(" Forget Hue Bridge").clicked() {
-            self.bg_tx.send(BgMessage::ForgetBridge).ok();
-            self.config.bridge_ip.clear();
-            self.config.bridge_username.clear();
-            self.config.save().ok();
-            self.bg_tx.send(BgMessage::UpdateConfig(self.config.clone())).ok();
-            self.connection_state = BridgeConnectionState::Idle;
-        }
+                let mut forget_clicked = false;
+                ui.scope(|ui| {
+                    let danger_color = egui::Color32::from_rgb(0x3d, 0x3d, 0x3b);
+                    ui.style_mut().visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, danger_color);
+                    ui.style_mut().visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, danger_color);
+                    ui.style_mut().visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, danger_color);
+                    ui.style_mut().visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, danger_color);
+                    if ui.button("🗑 Forget Hue Bridge").clicked() {
+                        forget_clicked = true;
+                    }
+                });
+                if forget_clicked {
+                    self.request_confirm(
+                        "Forget Hue Bridge?",
+                        "This will disconnect from the Hue Bridge and remove its saved IP address and credentials. You will need to re-pair with the bridge to control your lights again.",
+                        ConfirmAction::ForgetBridge,
+                    );
+                }
 
-        ui.add_space(10.0);
-        if ui.button("Quit App").clicked() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                ui.add_space(6.0);
+
+                ui.allocate_ui_with_layout(egui::vec2(full_width, 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(12.0, 6.0);
+                    ui.style_mut().spacing.item_spacing.y = 0.0;
+
+                    if ui.button("Close").clicked() {
+                        self.settings.is_open = false;
+                    }
+
+                    if ui.button("Quit App").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            });
+
+        if !open {
+            self.settings.is_open = false;
         }
     }
 
