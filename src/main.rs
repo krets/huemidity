@@ -721,13 +721,6 @@ async fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
 
-    // 5. Initialize tray variables
-    let (show_hide_id, quit_id) = if let Some(ref t) = tray {
-        (t.show_hide_id.clone(), t.quit_id.clone())
-    } else {
-        (String::new(), String::new())
-    };
-
     let bg_tx_clone = bg_tx.clone();
     let gui_tx_clone = gui_tx.clone();
 
@@ -765,8 +758,6 @@ async fn main() -> Result<(), eframe::Error> {
                 config,
                 gui_rx,
                 bg_tx_clone,
-                show_hide_id,
-                quit_id,
                 tray.is_some(),
             );
 

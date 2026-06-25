@@ -252,10 +252,6 @@ pub struct HueMIDItyApp {
     // Cached textures
     pub app_icon_texture: Option<egui::TextureHandle>,
 
-    // Tray Menu IDs
-    pub tray_show_hide_id: String,
-    pub tray_quit_id: String,
-
     // Timing and UI effects
     pub last_port_refresh: Instant,
     pub manual_ip_input: String,
@@ -294,8 +290,6 @@ impl HueMIDItyApp {
         config: AppConfig,
         gui_rx: Receiver<GuiMessage>,
         bg_tx: Sender<BgMessage>,
-        tray_show_hide_id: String,
-        tray_quit_id: String,
         tray_available: bool,
     ) -> Self {
         // Auto-refresh devices on startup if connected
@@ -357,8 +351,6 @@ impl HueMIDItyApp {
                 action: None,
             },
             app_icon_texture: None,
-            tray_show_hide_id,
-            tray_quit_id,
             last_port_refresh: Instant::now(),
             light_last_local_edit: HashMap::new(),
             group_last_local_edit: HashMap::new(),
@@ -1925,6 +1917,12 @@ impl HueMIDItyApp {
     }
 }
 
+// Null-terminated UTF-16 encoding for passing string literals to Win32 *W APIs.
+#[cfg(windows)]
+fn encode_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 impl HueMIDItyApp {
     /// Adds or removes the window's taskbar button, independent of its minimized/visible
     /// state. `WS_EX_TOOLWINDOW`/`WS_EX_APPWINDOW` are purely taskbar/Alt-Tab presence
@@ -1968,6 +1966,58 @@ impl HueMIDItyApp {
     #[cfg(not(windows))]
     fn set_taskbar_presence(&self, _show_in_taskbar: bool) {}
 
+    /// Builds and shows the tray icon's right-click context menu using raw Win32 calls,
+    /// returning the selected command id (crate::tray::CMD_*) or `None` if dismissed.
+    ///
+    /// This deliberately does not use tray-icon/muda's built-in menu support: that relies
+    /// on WM_COMMAND being delivered to a `SetWindowSubclass`-subclassed window and
+    /// translated into a `muda::MenuEvent`, and on at least one real machine that bridge
+    /// silently never fired - the menu displayed and dismissed normally, but selecting an
+    /// item produced no event at all. Passing `TPM_RETURNCMD` to `TrackPopupMenu` instead
+    /// returns the chosen item synchronously as the call's own return value, with no
+    /// event-posting or subclassing involved.
+    #[cfg(windows)]
+    fn show_tray_context_menu(&self, x: i32, y: i32) -> Option<u32> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            AppendMenuW, CreatePopupMenu, DestroyMenu, SetForegroundWindow, TrackPopupMenu,
+            MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RETURNCMD,
+        };
+        let hwnd = self.hwnd? as *mut core::ffi::c_void;
+        unsafe {
+            let menu = CreatePopupMenu();
+            if menu.is_null() {
+                return None;
+            }
+
+            let show_hide_label = encode_wide("Show / Hide Window");
+            let quit_label = encode_wide("Quit HueMIDIty");
+            AppendMenuW(menu, MF_STRING, crate::tray::CMD_SHOW_HIDE as usize, show_hide_label.as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            AppendMenuW(menu, MF_STRING, crate::tray::CMD_QUIT as usize, quit_label.as_ptr());
+
+            // Bring our window to the foreground first so the popup can dismiss itself
+            // properly when the user clicks outside of it.
+            SetForegroundWindow(hwnd);
+            let cmd = TrackPopupMenu(
+                menu,
+                TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD,
+                x,
+                y,
+                0,
+                hwnd,
+                std::ptr::null(),
+            );
+            DestroyMenu(menu);
+
+            if cmd == 0 { None } else { Some(cmd as u32) }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn show_tray_context_menu(&self, _x: i32, _y: i32) -> Option<u32> {
+        None
+    }
+
     fn toggle_window_visibility(&mut self, ctx: &egui::Context) {
         self.window_visible = !self.window_visible;
         // Order matters: drop the taskbar button before minimizing so it doesn't
@@ -1998,27 +2048,34 @@ impl eframe::App for HueMIDItyApp {
 
         self.check_channels(ctx);
 
-        // System tray menu events handler
-        while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
-            let id_str = &event.id.0;
-            if id_str == &self.tray_show_hide_id {
-                self.toggle_window_visibility(ctx);
-            } else if id_str == &self.tray_quit_id {
-                std::process::exit(0);
-            }
-        }
-
-        // A single left-click on the tray icon toggles the window. React on the button-up
-        // transition only - mouse-down and mouse-up each produce their own Click event, so
-        // reacting to both would toggle twice (net no-op) on every click.
+        // Tray icon events. A single left-click toggles the window - react on the
+        // button-up transition only, since mouse-down and mouse-up each produce their
+        // own Click event and reacting to both would toggle twice (net no-op). A
+        // right-click shows our own hand-rolled popup menu (see show_tray_context_menu)
+        // rather than relying on tray-icon/muda's built-in menu display, which turned
+        // out to never deliver a usable event back on at least one real machine.
         while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                button_state: tray_icon::MouseButtonState::Up,
-                ..
-            } = event
-            {
-                self.toggle_window_visibility(ctx);
+            match event {
+                tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Left,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    ..
+                } => {
+                    self.toggle_window_visibility(ctx);
+                }
+                tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Right,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    position,
+                    ..
+                } => {
+                    match self.show_tray_context_menu(position.x as i32, position.y as i32) {
+                        Some(crate::tray::CMD_SHOW_HIDE) => self.toggle_window_visibility(ctx),
+                        Some(crate::tray::CMD_QUIT) => std::process::exit(0),
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         }
 

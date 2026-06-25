@@ -1,10 +1,16 @@
-use muda::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+
+// Stable command ids returned by the hand-rolled right-click popup menu in app.rs.
+// muda's automatic WM_COMMAND -> MenuEvent bridge (via SetWindowSubclass) turned out to
+// be unreliable for tray context menus on at least one real machine - clicks in the menu
+// never produced a MenuEvent at all, even though the menu displayed and dismissed
+// correctly. Building the popup menu directly with TrackPopupMenu's TPM_RETURNCMD flag
+// returns the chosen item synchronously with no event-posting/subclassing involved.
+pub const CMD_SHOW_HIDE: u32 = 1;
+pub const CMD_QUIT: u32 = 2;
 
 pub struct SystemTray {
     pub tray_icon: TrayIcon,
-    pub show_hide_id: String,
-    pub quit_id: String,
 }
 
 // build.rs embeds resources/icon.ico into the exe via winres under resource id "1"
@@ -28,28 +34,16 @@ fn load_tray_icon() -> Result<Icon, Box<dyn std::error::Error>> {
 
 pub fn setup_tray() -> Result<SystemTray, Box<dyn std::error::Error>> {
     let icon = load_tray_icon()?;
-    let menu = Menu::new();
-    
-    let show_hide = MenuItem::new("Show / Hide Window", true, None);
-    let quit = MenuItem::new("Quit HueMIDIty", true, None);
-    
-    let show_hide_id = show_hide.id().clone().0;
-    let quit_id = quit.id().clone().0;
-    
-    menu.append(&show_hide)?;
-    menu.append(&PredefinedMenuItem::separator())?;
-    menu.append(&quit)?;
-    
+
+    // No menu is attached here - the right-click context menu is built and shown
+    // manually (see app::show_tray_context_menu) in response to the tray icon's own
+    // right-click event, bypassing tray-icon's built-in menu display entirely.
     let tray_icon = TrayIconBuilder::new()
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(false) // reserve the context menu for right-click; left double-click toggles the window
+        .with_menu_on_left_click(false) // reserve right-click for our own context menu; left double-click toggles the window
+        .with_menu_on_right_click(false)
         .with_tooltip("HueMIDIty")
         .with_icon(icon)
         .build()?;
-        
-    Ok(SystemTray {
-        tray_icon,
-        show_hide_id,
-        quit_id,
-    })
+
+    Ok(SystemTray { tray_icon })
 }
