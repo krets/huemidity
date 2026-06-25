@@ -1951,11 +1951,13 @@ dependencies = [
  "image",
  "midir",
  "muda",
+ "raw-window-handle",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tray-icon",
+ "windows-sys 0.61.2",
  "winres",
 ]
 

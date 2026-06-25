@@ -123,8 +123,8 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use raw_window_handle::HasWindowHandle;
 use tokio::sync::mpsc::{UnboundedSender as Sender, UnboundedReceiver as Receiver};
 
 #[derive(Clone, Debug)]
@@ -271,10 +271,22 @@ pub struct HueMIDItyApp {
 
     // Tray/window lifecycle: closing the window hides it instead of exiting; the app
     // only truly quits via the tray menu's Quit item or the Settings "Quit App" button.
+    //
+    // "Hiding" is done by minimizing (ViewportCommand::Minimized), not by setting
+    // Visible(false) directly - on Windows, clearing WS_VISIBLE (whether via egui's own
+    // command or even a raw Win32 ShowWindow call bypassing egui entirely) reliably
+    // stops the window from ever receiving another paint/update, which would make it
+    // impossible to ever process a later "show it again" tray click. Minimizing keeps
+    // WS_VISIBLE set, so update() keeps running the whole time. The taskbar button is
+    // removed separately via WS_EX_TOOLWINDOW (see set_taskbar_presence), which doesn't
+    // touch WS_VISIBLE and so doesn't share that problem.
     pub window_visible: bool,
     // If the tray icon failed to initialize there would be no way to bring a hidden
     // window back, so closing the window must quit normally in that case.
     pub tray_available: bool,
+    // Cached native window handle, captured on first frame, used to toggle the taskbar
+    // button via WS_EX_TOOLWINDOW (see set_taskbar_presence).
+    pub hwnd: Option<isize>,
 }
 
 impl HueMIDItyApp {
@@ -353,6 +365,7 @@ impl HueMIDItyApp {
             dashboard_drag: None,
             window_visible: true,
             tray_available,
+            hwnd: None,
         }
     }
 
@@ -1546,7 +1559,7 @@ impl HueMIDItyApp {
                     }
 
                     if ui.button("Quit App").clicked() {
-                        ui.ctx().send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                        std::process::exit(0);
                     }
                 });
             });
@@ -1912,18 +1925,72 @@ impl HueMIDItyApp {
     }
 }
 
-/// Stable id for the one real application window, which is created/destroyed on demand
-/// as a deferred child viewport of the always-present ghost root (see [`RootApp`]).
-pub fn main_viewport_id() -> egui::ViewportId {
-    egui::ViewportId::from_hash_of("huemidity_main_window")
+impl HueMIDItyApp {
+    /// Adds or removes the window's taskbar button, independent of its minimized/visible
+    /// state. `WS_EX_TOOLWINDOW`/`WS_EX_APPWINDOW` are purely taskbar/Alt-Tab presence
+    /// flags - unlike `WS_VISIBLE`, toggling them does not affect whether the window
+    /// keeps receiving paint/update events, so this is safe to combine with `Minimized`.
+    #[cfg(windows)]
+    fn set_taskbar_presence(&self, show_in_taskbar: bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_EX_APPWINDOW,
+            WS_EX_TOOLWINDOW,
+        };
+        if let Some(hwnd) = self.hwnd {
+            let hwnd = hwnd as *mut core::ffi::c_void;
+            unsafe {
+                let mut style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                if show_in_taskbar {
+                    style &= !(WS_EX_TOOLWINDOW as isize);
+                    style |= WS_EX_APPWINDOW as isize;
+                } else {
+                    style &= !(WS_EX_APPWINDOW as isize);
+                    style |= WS_EX_TOOLWINDOW as isize;
+                }
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+                // Windows only picks up an extended-style change for taskbar purposes
+                // after the non-client frame is recalculated; SWP_FRAMECHANGED forces
+                // that without actually moving/resizing/restacking/activating it.
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn set_taskbar_presence(&self, _show_in_taskbar: bool) {}
+
+    fn toggle_window_visibility(&mut self, ctx: &egui::Context) {
+        self.window_visible = !self.window_visible;
+        // Order matters: drop the taskbar button before minimizing so it doesn't
+        // flash, but restore it before un-minimizing so the button is already there
+        // when the window reappears.
+        self.set_taskbar_presence(self.window_visible);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(!self.window_visible));
+        if self.window_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+    }
 }
 
-impl HueMIDItyApp {
-    /// Draws the actual application UI. Called every frame the main window is visible,
-    /// from inside the deferred child viewport's callback (see [`RootApp::update`]) - so
-    /// `ctx.input(..)`/`ctx.send_viewport_cmd(..)` here refer to that child window, not
-    /// the ghost root.
-    fn draw_child_window(&mut self, ctx: &egui::Context) {
+impl eframe::App for HueMIDItyApp {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if self.hwnd.is_none() {
+            if let Ok(handle) = frame.window_handle() {
+                if let raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
+                    self.hwnd = Some(h.hwnd.get());
+                }
+            }
+        }
+
         ctx.style_mut(|style| {
             style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
             style.interaction.selectable_labels = false;
@@ -1931,17 +1998,42 @@ impl HueMIDItyApp {
 
         self.check_channels(ctx);
 
+        // System tray menu events handler
+        while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+            let id_str = &event.id.0;
+            if id_str == &self.tray_show_hide_id {
+                self.toggle_window_visibility(ctx);
+            } else if id_str == &self.tray_quit_id {
+                std::process::exit(0);
+            }
+        }
+
+        // A single left-click on the tray icon toggles the window. React on the button-up
+        // transition only - mouse-down and mouse-up each produce their own Click event, so
+        // reacting to both would toggle twice (net no-op) on every click.
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.toggle_window_visibility(ctx);
+            }
+        }
+
         // Clicking the window's own close (X) button hides it to the tray instead of
-        // exiting (RootApp simply stops re-creating this child viewport, which tears
-        // down the native window cleanly - no hidden/minimized window state involved
-        // at all). If the tray failed to initialize, there'd be no way to bring the
-        // window back, so fall back to a real close in that case.
+        // exiting; only an explicit Quit (tray menu or Settings) actually closes the
+        // app. If the tray failed to initialize, there'd be no way to bring the window
+        // back, so quit outright in that case instead.
         if ctx.input(|i| i.viewport().close_requested()) {
             if self.tray_available {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.window_visible = false;
+                self.set_taskbar_presence(false);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             } else {
-                ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+                std::process::exit(0);
             }
         }
 
@@ -1954,91 +2046,5 @@ impl HueMIDItyApp {
                 self.draw_onboarding(ctx);
             }
         }
-    }
-}
-
-/// The top-level `eframe::App`. Its own viewport (the root) is a permanently invisible,
-/// taskbar-less "ghost" window that exists only to keep the event loop alive - on
-/// Windows, a window that's actually hidden (`Visible(false)`/minimized) stops getting
-/// `WM_PAINT`, which would starve `update()` of any chance to ever show it again. The
-/// real UI lives in a deferred child viewport that this `update()` creates or omits each
-/// frame depending on `window_visible`; omitting it tears the native window down
-/// completely (no taskbar entry), and calling it again creates a fresh one from scratch.
-pub struct RootApp {
-    pub app: Arc<Mutex<HueMIDItyApp>>,
-    pub icon: Option<Arc<egui::IconData>>,
-    last_visible: bool,
-}
-
-impl RootApp {
-    pub fn new(app: Arc<Mutex<HueMIDItyApp>>, icon: Option<Arc<egui::IconData>>) -> Self {
-        Self {
-            app,
-            icon,
-            last_visible: true,
-        }
-    }
-}
-
-impl eframe::App for RootApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let window_visible = {
-            let mut app = self.app.lock().unwrap();
-
-            // System tray menu events handler. Lives here (root) rather than in the
-            // child window's draw code, since the root keeps ticking unconditionally -
-            // the child window may not exist at all when these events arrive.
-            while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
-                let id_str = &event.id.0;
-                if id_str == &app.tray_show_hide_id {
-                    app.window_visible = !app.window_visible;
-                } else if id_str == &app.tray_quit_id {
-                    ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-                }
-            }
-
-            // A single left-click on the tray icon toggles the window. React on the
-            // button-up transition only - mouse-down and mouse-up each produce their
-            // own Click event, so reacting to both would toggle twice (net no-op).
-            while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-                if let tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    button_state: tray_icon::MouseButtonState::Up,
-                    ..
-                } = event
-                {
-                    app.window_visible = !app.window_visible;
-                }
-            }
-
-            app.window_visible
-        };
-
-        if window_visible {
-            let app_handle = Arc::clone(&self.app);
-            let viewport_id = main_viewport_id();
-            let mut builder = egui::ViewportBuilder::default()
-                .with_title("HueMIDIty")
-                .with_inner_size([720.0, 480.0])
-                .with_min_inner_size([640.0, 400.0])
-                .with_active(true)
-                .with_taskbar(true);
-            if let Some(icon) = &self.icon {
-                builder = builder.with_icon(Arc::clone(icon));
-            }
-
-            ctx.show_viewport_deferred(viewport_id, builder, move |ctx, _class| {
-                app_handle.lock().unwrap().draw_child_window(ctx);
-            });
-
-            // Just transitioned from hidden to visible (tray click, menu, or startup) -
-            // bring the freshly (re)created window to the front. This is a brand new
-            // native window in direct response to user input, so Windows allows it to
-            // take foreground focus normally.
-            if !self.last_visible {
-                ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::Focus);
-            }
-        }
-        self.last_visible = window_visible;
     }
 }

@@ -13,7 +13,6 @@ use midi::MidiListener;
 use app::{GuiMessage, BgMessage, HueMIDItyApp};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender as Sender, UnboundedReceiver as Receiver};
 
@@ -702,20 +701,20 @@ async fn main() -> Result<(), eframe::Error> {
     let (gui_tx, gui_rx) = unbounded_channel();
     let (bg_tx, bg_rx) = unbounded_channel();
 
-    // 4. Setup eframe options. The root viewport is a permanently invisible, taskbar-less
-    // "ghost" window - see the doc comment on app::RootApp for why: a window that's
-    // genuinely hidden/minimized stops receiving paint events on Windows, which would
-    // starve the update loop of any chance to ever show it again. The real app window is
-    // a deferred child viewport created on demand (also see RootApp), so it can be fully
-    // destroyed (no taskbar entry) and recreated from scratch rather than hidden.
-    let viewport = egui::ViewportBuilder::default()
-        .with_inner_size([1.0, 1.0])
-        .with_position([-32000.0, -32000.0])
-        .with_decorations(false)
-        .with_taskbar(false)
+    // 4. Setup eframe options - a single, ordinary window. Hiding it to the tray is done
+    // later via a raw Win32 ShowWindow call (see app::HueMIDItyApp::set_native_window_visible)
+    // rather than any egui ViewportCommand, specifically so egui/eframe never finds out
+    // the window is "hidden" and keeps calling update() normally the whole time.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("HueMIDIty")
+        .with_inner_size([720.0, 480.0])
+        .with_min_inner_size([640.0, 400.0])
+        .with_active(true)
         .with_visible(true);
 
-    let icon = load_icon().map(Arc::new);
+    if let Some(icon) = load_icon() {
+        viewport = viewport.with_icon(icon);
+    }
 
     let options = eframe::NativeOptions {
         viewport,
@@ -742,12 +741,11 @@ async fn main() -> Result<(), eframe::Error> {
             // Apply custom styling
             app::setup_custom_theme(&cc.egui_ctx);
 
-            // While the window is hidden (minimized to tray), egui's own reactive repaint
-            // scheduling (ctx.request_repaint_after) does not reliably wake the viewport -
-            // there's nothing to paint, so it appears to skip scheduling the timer. Without
-            // a wake, App::update() never runs again, so tray icon clicks and the Quit menu
-            // event just sit in their channels undrained. A plain OS thread ticking
-            // independently of egui's viewport state guarantees update() keeps running.
+            // Tray icon clicks and menu selections arrive on background channels that
+            // egui's own reactive repaint scheduling doesn't know about, so nothing
+            // would prompt update() to run and drain them otherwise. A plain OS thread
+            // ticking independently guarantees they get picked up promptly regardless
+            // of window visibility.
             let ctx_ticker = cc.egui_ctx.clone();
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(100));
@@ -762,9 +760,7 @@ async fn main() -> Result<(), eframe::Error> {
                 run_bg_worker(conf_clone, bg_rx, gui_tx_clone, bg_tx_self, ctx_clone).await;
             });
 
-            // Create App instance, shared between the root viewport's update() (which
-            // handles tray events) and the deferred child viewport's draw callback
-            // (which renders the actual UI) - see app::RootApp.
+            // Create App instance
             let app = HueMIDItyApp::new(
                 config,
                 gui_rx,
@@ -781,8 +777,7 @@ async fn main() -> Result<(), eframe::Error> {
                 Box::leak(Box::new(t));
             }
 
-            let root_app = app::RootApp::new(Arc::new(Mutex::new(app)), icon);
-            Ok(Box::new(root_app) as Box<dyn eframe::App>)
+            Ok(Box::new(app) as Box<dyn eframe::App>)
         }),
     )
 }
