@@ -18,7 +18,6 @@ pub enum BridgeConnectionState {
 
 #[derive(Deserialize, Debug)]
 struct MeetHueResponse {
-    id: String,
     internalipaddress: String,
 }
 

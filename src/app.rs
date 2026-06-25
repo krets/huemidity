@@ -166,6 +166,8 @@ pub enum BgMessage {
         group_id: String,
         seq: u64,
     },
+    // Handled in main.rs's background loop; not yet wired up to any UI action.
+    #[allow(dead_code)]
     RecallScene {
         group_id: String,
         scene_id: String,
@@ -636,7 +638,7 @@ impl HueMIDItyApp {
 
             // Dim the header in place when a modal is open, without blocking the modal's input.
             if any_modal_open {
-                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(150));
+                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(80));
             }
         });
 
@@ -651,7 +653,7 @@ impl HueMIDItyApp {
 
             // Dim the content area in place when a modal is open, without blocking the modal's input.
             if any_modal_open {
-                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(150));
+                ui.painter().rect_filled(ui.max_rect(), 0.0, egui::Color32::from_black_alpha(80));
             }
         });
 
@@ -674,9 +676,11 @@ impl HueMIDItyApp {
             return;
         }
 
-        // Full-screen dimming overlay, above any other modal, to make this dialog block everything.
+        // Full-screen dimming overlay, below the dialog's own Foreground order so it can never
+        // be clicked to the front and occlude the dialog (egui reorders layers within an Order
+        // tier by click, but never across tiers).
         egui::Area::new(egui::Id::new("confirm_dialog_overlay"))
-            .order(egui::Order::Foreground)
+            .order(egui::Order::Middle)
             .fixed_pos(egui::Pos2::ZERO)
             .show(ctx, |ui| {
                 let screen_rect = ctx.content_rect();
@@ -1781,7 +1785,7 @@ impl HueMIDItyApp {
                             
                             if added {
                                 let visuals = ui.style().visuals.widgets.noninteractive;
-                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                                 child_ui.add_space(8.0);
                                 let mut val = true;
                                 child_ui.add_enabled(false, egui::Checkbox::new(&mut val, ""));
@@ -1809,7 +1813,7 @@ impl HueMIDItyApp {
                                     ui.painter().rect_filled(rect, 4.0, bg_fill);
                                 }
                                 
-                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                                 child_ui.add_space(8.0);
                                 let mut cb_val = selected;
                                 if child_ui.checkbox(&mut cb_val, "").changed() {
@@ -1836,7 +1840,7 @@ impl HueMIDItyApp {
                             
                             if added {
                                 let visuals = ui.style().visuals.widgets.noninteractive;
-                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                                 child_ui.add_space(8.0);
                                 let mut val = true;
                                 child_ui.add_enabled(false, egui::Checkbox::new(&mut val, ""));
@@ -1864,7 +1868,7 @@ impl HueMIDItyApp {
                                     ui.painter().rect_filled(rect, 4.0, bg_fill);
                                 }
                                 
-                                let mut child_ui = ui.child_ui(rect, egui::Layout::left_to_right(egui::Align::Center), None);
+                                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
                                 child_ui.add_space(8.0);
                                 let mut cb_val = selected;
                                 if child_ui.checkbox(&mut cb_val, "").changed() {

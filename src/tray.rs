@@ -10,6 +10,9 @@ pub const CMD_SHOW_HIDE: u32 = 1;
 pub const CMD_QUIT: u32 = 2;
 
 pub struct SystemTray {
+    // Never read directly, but must be kept alive: dropping a `TrayIcon` removes it
+    // from the system tray.
+    #[allow(dead_code)]
     pub tray_icon: TrayIcon,
 }
 
