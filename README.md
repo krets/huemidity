@@ -1,49 +1,20 @@
-# HueMIDIty v0.1.1
+# HueMIDIty
 
-Binds incoming MIDI events (CC, Note On/Off) to Philips Hue lights, groups, and scenes. It runs in the system tray and opens a configuration dashboard.
+HueMIDIty is a Philips Hue MIDI controller utility designed to bind MIDI controller events (knobs, faders, notes) to Philips Hue lights, groups, and scenes. It offers a basic dashboard for interactive control, as well as MIDI integration for controlling most aspects of the lights on the system.
 
-## Installation
+## Acknowledgement & Dedication
 
-### 1. macOS (via Homebrew Tap)
+A very special thank you to **Giovanni** for making this project possible. This tool was put together as a thank you for his support and inspiration!
 
-The recommended way to install on macOS is using Homebrew:
+## Download & Releases
 
-```bash
-brew tap krets/huemidity
-brew trust krets/huemidity  # Required in Homebrew 6.0+ for custom taps
-brew install huemidity
-```
+Download precompiled binaries for macOS and Windows from the [Releases](https://github.com/krets/huemidity/releases) page.
 
-This will install the command-line utility `huemidity` and package a native `HueMIDIty.app` launcher.
+## Support
 
-* **To run the CLI directly:**
-  ```bash
-  huemidity
-  ```
-* **To add a double-clickable launcher in `/Applications`:**
-  ```bash
-  ln -s "$(brew --prefix)/opt/huemidity/HueMIDIty.app" /Applications/
-  ```
+If you run into issues, have feedback, or want to submit support requests, please open an issue on GitHub at:
+[https://github.com/krets/huemidity](https://github.com/krets/huemidity)
 
-### 2. All Platforms (via `uv`)
+## License
 
-If you have [uv](https://github.com/astral-sh/uv) installed, you can install and run it directly as a global tool:
-
-```bash
-uv tool install git+https://github.com/krets/huemidity.git
-huemidity
-```
-
-This installs HueMIDIty in an isolated environment and exposes the `huemidity` command on your PATH.
-
-### 3. macOS Double-Clickable Bundle (Source Installation)
-
-If you want to run or build from source on macOS:
-
-```bash
-git clone https://github.com/krets/huemidity.git
-cd huemidity
-./install.command
-open HueMIDIty.app
-```
-*(The executable permission for `install.command` is pre-set via git.)*
+This project is open-source. See the license details in the repository.
