@@ -142,6 +142,7 @@ async fn run_bg_worker(
                                     ctx.request_repaint();
                                 }
                                 Err(e) => {
+                                    eprintln!("[HueMIDIty] Error connecting to Bridge at {}: {:?}", ip, e);
                                     connection_state = BridgeConnectionState::Error(e.to_string());
                                     gui_tx.send(GuiMessage::HueConnectionState(connection_state.clone())).ok();
                                     ctx.request_repaint();
@@ -685,23 +686,27 @@ fn load_icon() -> Option<egui::IconData> {
 
 #[tokio::main]
 async fn main() -> Result<(), eframe::Error> {
+    // Trigger macOS Local Network permission prompt on startup.
+    // On macOS Sequoia, raw TCP connections to local IPs are silently blocked with EHOSTUNREACH
+    // and do not trigger a permission prompt. Sending a dummy UDP broadcast forces macOS
+    // to present the "Local Network" permission dialog.
+    #[cfg(target_os = "macos")]
+    {
+        use std::net::UdpSocket;
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let _ = socket.set_broadcast(true);
+            let _ = socket.send_to(&[0], "255.255.255.255:1");
+        }
+    }
+
     // 1. Load config
     let config = AppConfig::load();
 
-    // 2. Setup System Tray
-    let tray = match tray::setup_tray() {
-        Ok(t) => Some(t),
-        Err(e) => {
-            eprintln!("Failed to set up system tray: {e}");
-            None
-        }
-    };
-
-    // 3. Create communication channels
+    // 2. Create communication channels
     let (gui_tx, gui_rx) = unbounded_channel();
     let (bg_tx, bg_rx) = unbounded_channel();
 
-    // 4. Setup eframe options - a single, ordinary window. Hiding it to the tray is done
+    // 3. Setup eframe options - a single, ordinary window. Hiding it to the tray is done
     // later via a raw Win32 ShowWindow call (see app::HueMIDItyApp::set_native_window_visible)
     // rather than any egui ViewportCommand, specifically so egui/eframe never finds out
     // the window is "hidden" and keeps calling update() normally the whole time.
@@ -733,6 +738,17 @@ async fn main() -> Result<(), eframe::Error> {
         Box::new(move |cc| {
             // Apply custom styling
             app::setup_custom_theme(&cc.egui_ctx);
+
+            // 4. Setup System Tray
+            // This MUST be run inside the run_native closure on macOS (and is safe on Windows)
+            // because AppKit/Cocoa's application connection needs to be initialized first.
+            let tray = match tray::setup_tray() {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("Failed to set up system tray: {e}");
+                    None
+                }
+            };
 
             // Tray icon clicks and menu selections arrive on background channels that
             // egui's own reactive repaint scheduling doesn't know about, so nothing
