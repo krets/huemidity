@@ -264,6 +264,17 @@ pub struct HueMIDItyApp {
     // otherwise an in-flight refresh can land after the user moves on and snap the slider back.
     pub light_last_local_edit: HashMap<String, Instant>,
     pub group_last_local_edit: HashMap<String, Instant>,
+
+    // Index of the dashboard widget currently being dragged via its drag handle, if any.
+    pub dashboard_drag: Option<usize>,
+
+    // Tray/window lifecycle: closing the window hides it instead of exiting; the app
+    // only truly quits via the tray menu's Quit item or the Settings "Quit App" button.
+    pub window_visible: bool,
+    pub quit_requested: bool,
+    // If the tray icon failed to initialize there would be no way to bring a hidden
+    // window back, so closing the window must quit normally in that case.
+    pub tray_available: bool,
 }
 
 impl HueMIDItyApp {
@@ -273,6 +284,7 @@ impl HueMIDItyApp {
         bg_tx: Sender<BgMessage>,
         tray_show_hide_id: String,
         tray_quit_id: String,
+        tray_available: bool,
     ) -> Self {
         // Auto-refresh devices on startup if connected
         let connection_state = if !config.bridge_ip.is_empty() && !config.bridge_username.is_empty() {
@@ -338,6 +350,23 @@ impl HueMIDItyApp {
             last_port_refresh: Instant::now(),
             light_last_local_edit: HashMap::new(),
             group_last_local_edit: HashMap::new(),
+            dashboard_drag: None,
+            window_visible: true,
+            quit_requested: false,
+            tray_available,
+        }
+    }
+
+    fn toggle_window_visibility(&mut self, ctx: &egui::Context) {
+        // Minimize rather than fully hide (Visible(false)): on Windows, removing
+        // WS_VISIBLE stops the OS from ever delivering WM_PAINT to the window again,
+        // which means egui's update() loop - where a later "show again" command would
+        // get processed - can never run again either. A minimized window keeps
+        // WS_VISIBLE set, so it keeps receiving paint events and stays recoverable.
+        self.window_visible = !self.window_visible;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(!self.window_visible));
+        if self.window_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
     }
 
@@ -749,6 +778,12 @@ impl HueMIDItyApp {
             return;
         }
 
+        // Safety net: if the drag ended outside any widget (e.g. released off-window),
+        // the handle's own drag_stopped() event never fires, so clear it here instead.
+        if self.dashboard_drag.is_some() && !ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary)) {
+            self.dashboard_drag = None;
+        }
+
         // Scrollable widgets grid
         egui::ScrollArea::vertical().show(ui, |ui| {
             let width = ui.available_width() - 8.0; // Subtract 8.0 to account for scrollbar
@@ -770,8 +805,14 @@ impl HueMIDItyApp {
                     let mut swap_indices = None;
                     
                     for (idx, item) in layout_items.iter().enumerate() {
+                        let is_being_dragged = self.dashboard_drag == Some(idx);
+                        let border_color = if is_being_dragged {
+                            egui::Color32::from_rgb(168, 85, 247)
+                        } else {
+                            egui::Color32::from_rgb(44, 48, 68)
+                        };
                         let card_response = egui::Frame::window(ui.style())
-                            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(44, 48, 68)))
+                            .stroke(egui::Stroke::new(if is_being_dragged { 2.0 } else { 1.0 }, border_color))
                             .shadow(egui::Shadow::NONE)
                             .inner_margin(egui::Margin::symmetric(16, 12))
                             .show(ui, |ui| {
@@ -783,21 +824,29 @@ impl HueMIDItyApp {
                                 ui.vertical(|ui| {
                                     // Header of card
                                     ui.horizontal(|ui| {
-                                        let drag_handle = ui.label("⠿");
-                                        let drag_response = ui.interact(
-                                            drag_handle.rect,
-                                            ui.id().with("drag").with(idx),
-                                            egui::Sense::drag(),
+                                        let drag_handle = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new("⠿").color(if is_being_dragged {
+                                                    egui::Color32::from_rgb(168, 85, 247)
+                                                } else {
+                                                    egui::Color32::from_rgb(140, 140, 160)
+                                                })
+                                            )
+                                            .sense(egui::Sense::drag())
                                         );
 
-                                        if drag_response.dragged() {
-                                            // Handle drag reordering
-                                            let delta = drag_response.drag_delta();
-                                            if delta.y > 20.0 && idx < layout_items.len() - 1 {
-                                                swap_indices = Some((idx, idx + 1));
-                                            } else if delta.y < -20.0 && idx > 0 {
-                                                swap_indices = Some((idx, idx - 1));
-                                            }
+                                        if drag_handle.hovered() || drag_handle.dragged() {
+                                            ui.ctx().set_cursor_icon(if drag_handle.dragged() {
+                                                egui::CursorIcon::Grabbing
+                                            } else {
+                                                egui::CursorIcon::Grab
+                                            });
+                                        }
+                                        if drag_handle.drag_started() {
+                                            self.dashboard_drag = Some(idx);
+                                        }
+                                        if drag_handle.drag_stopped() {
+                                            self.dashboard_drag = None;
                                         }
 
                                         let name = if item.r#type == "light" {
@@ -1010,6 +1059,20 @@ impl HueMIDItyApp {
 
                         // Mouse wheel adjustments over card
                         let card_rect = card_response.response.rect;
+
+                        // Live reordering: while a widget is being dragged, swapping it with
+                        // whichever card the pointer is currently over gives immediate visual
+                        // feedback, rather than relying on a one-shot drag distance threshold.
+                        if let Some(drag_idx) = self.dashboard_drag {
+                            if drag_idx != idx
+                                && ui.rect_contains_pointer(card_rect)
+                                && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
+                            {
+                                swap_indices = Some((drag_idx, idx));
+                                self.dashboard_drag = Some(idx);
+                            }
+                        }
+
                         if ui.rect_contains_pointer(card_rect) {
                             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                             if scroll.abs() > 0.0 {
@@ -1497,6 +1560,7 @@ impl HueMIDItyApp {
                     }
 
                     if ui.button("Quit App").clicked() {
+                        self.quit_requested = true;
                         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
@@ -1876,11 +1940,35 @@ impl eframe::App for HueMIDItyApp {
         while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
             let id_str = &event.id.0;
             if id_str == &self.tray_show_hide_id {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.toggle_window_visibility(ctx);
             } else if id_str == &self.tray_quit_id {
+                self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+        }
+
+        // A single left-click on the tray icon toggles the window. React on the button-up
+        // transition only - mouse-down and mouse-up each produce their own Click event, so
+        // reacting to both would toggle twice (net no-op) on every click.
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                button_state: tray_icon::MouseButtonState::Up,
+                ..
+            } = event
+            {
+                self.toggle_window_visibility(ctx);
+            }
+        }
+
+        // Clicking the window's own close (X) button minimizes it to the tray instead
+        // of exiting; only an explicit Quit (tray menu or Settings) actually closes the
+        // app. If the tray failed to initialize, there'd be no way to bring the window
+        // back, so fall back to a normal close in that case.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_requested && self.tray_available {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.window_visible = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
 
         // Check connection state to decide whether to draw onboarding overlay

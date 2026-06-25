@@ -689,7 +689,13 @@ async fn main() -> Result<(), eframe::Error> {
     let config = AppConfig::load();
 
     // 2. Setup System Tray
-    let tray = tray::setup_tray().ok();
+    let tray = match tray::setup_tray() {
+        Ok(t) => Some(t),
+        Err(e) => {
+            eprintln!("Failed to set up system tray: {e}");
+            None
+        }
+    };
 
     // 3. Create communication channels
     let (gui_tx, gui_rx) = unbounded_channel();
@@ -732,6 +738,18 @@ async fn main() -> Result<(), eframe::Error> {
             // Apply custom styling
             app::setup_custom_theme(&cc.egui_ctx);
 
+            // While the window is hidden (minimized to tray), egui's own reactive repaint
+            // scheduling (ctx.request_repaint_after) does not reliably wake the viewport -
+            // there's nothing to paint, so it appears to skip scheduling the timer. Without
+            // a wake, App::update() never runs again, so tray icon clicks and the Quit menu
+            // event just sit in their channels undrained. A plain OS thread ticking
+            // independently of egui's viewport state guarantees update() keeps running.
+            let ctx_ticker = cc.egui_ctx.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(100));
+                ctx_ticker.request_repaint();
+            });
+
             // Spawn background task now that we have the Context
             let ctx_clone = cc.egui_ctx.clone();
             let conf_clone = config.clone();
@@ -747,6 +765,7 @@ async fn main() -> Result<(), eframe::Error> {
                 bg_tx_clone,
                 show_hide_id,
                 quit_id,
+                tray.is_some(),
             );
 
             // Keep reference to tray icon alive so it doesn't get dropped
