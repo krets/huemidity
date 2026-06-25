@@ -109,7 +109,7 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{UnboundedSender as Sender, UnboundedReceiver as Receiver};
 
 #[derive(Clone, Debug)]
@@ -121,6 +121,7 @@ pub enum GuiMessage {
         lights: HashMap<String, Light>,
         groups: HashMap<String, Group>,
         scenes: HashMap<String, Scene>,
+        requested_at: Instant,
     },
     Error(String),
 }
@@ -138,6 +139,16 @@ pub enum BgMessage {
     SetGroupAction {
         group_id: String,
         action: serde_json::Value,
+    },
+    // Sent by a background task once a light/group PUT has succeeded and settled.
+    // Only honored if `seq` still matches the latest dispatched request for that id.
+    CompletedLightPut {
+        light_id: String,
+        seq: u64,
+    },
+    CompletedGroupPut {
+        group_id: String,
+        seq: u64,
     },
     RecallScene {
         group_id: String,
@@ -210,6 +221,12 @@ pub struct HueMIDItyApp {
     // Timing and UI effects
     pub last_port_refresh: Instant,
     pub manual_ip_input: String,
+
+    // Timestamp of the last local brightness edit per light/group. A device refresh
+    // that was requested before this timestamp is stale for that id and must be ignored,
+    // otherwise an in-flight refresh can land after the user moves on and snap the slider back.
+    pub light_last_local_edit: HashMap<String, Instant>,
+    pub group_last_local_edit: HashMap<String, Instant>,
 }
 
 impl HueMIDItyApp {
@@ -272,6 +289,8 @@ impl HueMIDItyApp {
             tray_show_hide_id,
             tray_quit_id,
             last_port_refresh: Instant::now(),
+            light_last_local_edit: HashMap::new(),
+            group_last_local_edit: HashMap::new(),
         }
     }
 
@@ -314,8 +333,32 @@ impl HueMIDItyApp {
                         _ => {}
                     }
                 }
-                GuiMessage::DevicesRefreshed { lights, groups, scenes } => {
+                GuiMessage::DevicesRefreshed { mut lights, mut groups, scenes, requested_at } => {
                     if !self.add_widgets.is_open {
+                        // Hue bulbs apply brightness over a short physical transition (~400ms), so even
+                        // a refresh requested *after* our last edit can still report an in-between value.
+                        // Ignore refreshes for a light/group until a settle window has passed since the
+                        // last local edit, and also reject any refresh that was requested before that
+                        // edit (an out-of-order/stale response for a since-superseded value).
+                        const SETTLE_WINDOW: Duration = Duration::from_millis(700);
+                        let now = Instant::now();
+                        for (id, edited_at) in &self.light_last_local_edit {
+                            if *edited_at > requested_at || now.duration_since(*edited_at) < SETTLE_WINDOW {
+                                if let (Some(old), Some(new)) = (self.lights.get(id), lights.get_mut(id)) {
+                                    new.state.bri = old.state.bri;
+                                    new.state.on = old.state.on;
+                                }
+                            }
+                        }
+                        for (id, edited_at) in &self.group_last_local_edit {
+                            if *edited_at > requested_at || now.duration_since(*edited_at) < SETTLE_WINDOW {
+                                if let (Some(old), Some(new)) = (self.groups.get(id), groups.get_mut(id)) {
+                                    new.action.bri = old.action.bri;
+                                    new.action.on = old.action.on;
+                                }
+                            }
+                        }
+
                         self.lights = lights;
                         self.groups = groups;
                         self.scenes = scenes;
@@ -656,7 +699,8 @@ impl HueMIDItyApp {
                                                     let is_on = bri > 0;
                                                     light.state.bri = Some(bri);
                                                     light.state.on = Some(is_on);
-                                                    
+                                                    self.light_last_local_edit.insert(item.id.clone(), Instant::now());
+
                                                     let mut state = serde_json::json!({ "bri": bri, "on": is_on });
                                                     if bri == 0 {
                                                         state = serde_json::json!({ "on": false });
@@ -748,7 +792,8 @@ impl HueMIDItyApp {
                                                     let is_on = bri > 0;
                                                     group.action.bri = Some(bri);
                                                     group.action.on = Some(is_on);
-                                                    
+                                                    self.group_last_local_edit.insert(item.id.clone(), Instant::now());
+
                                                     let mut action = serde_json::json!({ "bri": bri, "on": is_on });
                                                     if bri == 0 {
                                                         action = serde_json::json!({ "on": false });
@@ -1041,10 +1086,11 @@ impl HueMIDItyApp {
                         let mut edit_key = None;
 
                         let table_width = inner_w - 50.0; // Subtract padding/scrollbar
-                        let col0_w = table_width * 0.25;
-                        let col1_w = table_width * 0.35;
-                        let col2_w = table_width * 0.25;
-                        let col3_w = table_width * 0.15;
+                        let col3_w = 56.0_f32.min(table_width * 0.15);
+                        let remaining = table_width - col3_w;
+                        let col0_w = remaining * 0.25;
+                        let col1_w = remaining * 0.40;
+                        let col2_w = remaining * 0.35;
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             egui::Grid::new("active_mappings_table")
@@ -1107,11 +1153,12 @@ impl HueMIDItyApp {
                                         // Column 4: Edit & Delete
                                         ui.allocate_ui(egui::vec2(col3_w, 28.0), |ui| {
                                             ui.set_min_width(col3_w);
+                                            ui.spacing_mut().item_spacing.x = 4.0;
                                             ui.horizontal(|ui| {
-                                                if ui.add_sized(egui::vec2(28.0, 24.0), egui::Button::new("✏")).clicked() {
+                                                if ui.add_sized(egui::vec2(24.0, 24.0), egui::Button::new("✏").frame(false)).clicked() {
                                                     edit_key = Some(event.clone());
                                                 }
-                                                if ui.add_sized(egui::vec2(28.0, 24.0), egui::Button::new("🗑")).clicked() {
+                                                if ui.add_sized(egui::vec2(24.0, 24.0), egui::Button::new("🗑").frame(false)).clicked() {
                                                     delete_key = Some(event.clone());
                                                 }
                                             });
@@ -1267,17 +1314,23 @@ impl HueMIDItyApp {
                     .show_ui(ui, |ui| {
                         match target_type.as_str() {
                             "light" => {
-                                for (id, light) in &self.lights {
+                                let mut sorted: Vec<(&String, &Light)> = self.lights.iter().collect();
+                                sorted.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+                                for (id, light) in sorted {
                                     ui.selectable_value(&mut self.mapping_creator.target_id, id.clone(), &light.name);
                                 }
                             }
                             "group" => {
-                                for (id, group) in &self.groups {
+                                let mut sorted: Vec<(&String, &Group)> = self.groups.iter().collect();
+                                sorted.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+                                for (id, group) in sorted {
                                     ui.selectable_value(&mut self.mapping_creator.target_id, id.clone(), &group.name);
                                 }
                             }
                             _ => {
-                                for (id, scene) in &self.scenes {
+                                let mut sorted: Vec<(&String, &Scene)> = self.scenes.iter().collect();
+                                sorted.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+                                for (id, scene) in sorted {
                                     ui.selectable_value(&mut self.mapping_creator.target_id, id.clone(), &scene.name);
                                 }
                             }
@@ -1352,10 +1405,11 @@ impl HueMIDItyApp {
                     ui.checkbox(&mut self.mapping_creator.auto_on, "Auto-On (turn device ON when adjusting)");
                 }
 
-                ui.add_space(15.0);
+                ui.add_space(6.0);
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.style_mut().spacing.button_padding = egui::vec2(16.0, 10.0);
+                ui.allocate_ui_with_layout(egui::vec2(full_width, 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(12.0, 6.0);
+                    ui.style_mut().spacing.item_spacing.y = 0.0;
 
                     if ui.button("Save Mapping").clicked() {
                         if !self.mapping_creator.target_id.is_empty() {
@@ -1528,10 +1582,12 @@ impl HueMIDItyApp {
                         }
                     });
 
-                ui.add_space(15.0);
+                ui.add_space(6.0);
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.style_mut().spacing.button_padding = egui::vec2(16.0, 10.0);
+                let bottom_row_width = ui.available_width();
+                ui.allocate_ui_with_layout(egui::vec2(bottom_row_width, 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.style_mut().spacing.button_padding = egui::vec2(12.0, 6.0);
+                    ui.style_mut().spacing.item_spacing.y = 0.0;
 
                     if ui.button("Add Selected").clicked() {
                         for id in &self.add_widgets.selected_lights {

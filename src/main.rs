@@ -92,6 +92,13 @@ async fn run_bg_worker(
     let mut last_light_sent: HashMap<String, std::time::Instant> = HashMap::new();
     let mut last_group_sent: HashMap<String, std::time::Instant> = HashMap::new();
 
+    // Latest dispatched request number per light/group. Only the PUT that matches the
+    // current value when it completes is allowed to trigger a refresh - any PUT that was
+    // superseded by a newer edit before it finished is dropped, so a slow/out-of-order
+    // response can never overwrite a more recent slider position.
+    let mut light_request_seq: HashMap<String, u64> = HashMap::new();
+    let mut group_request_seq: HashMap<String, u64> = HashMap::new();
+
     // Check if we need to search or poll
     let mut connection_state = if !config.bridge_ip.is_empty() && !config.bridge_username.is_empty() {
         BridgeConnectionState::Connected {
@@ -155,6 +162,7 @@ async fn run_bg_worker(
 
             _ = refresh_interval.tick() => {
                 if let BridgeConnectionState::Connected { ip, username } = &connection_state {
+                    let requested_at = std::time::Instant::now();
                     if let Ok(l) = hue_client.fetch_lights(ip, username).await {
                         lights_cache = l.clone();
                     }
@@ -169,6 +177,7 @@ async fn run_bg_worker(
                         lights: lights_cache.clone(),
                         groups: groups_cache.clone(),
                         scenes: scenes_cache.clone(),
+                        requested_at,
                     }).ok();
                     ctx.request_repaint();
                 }
@@ -193,14 +202,19 @@ async fn run_bg_worker(
                     for (light_id, state) in lights_to_send {
                         pending_lights.remove(&light_id);
                         last_light_sent.insert(light_id.clone(), now);
-                        
+
+                        let seq = light_request_seq.entry(light_id.clone()).and_modify(|v| *v += 1).or_insert(1);
+                        let seq = *seq;
+
                         let client = hue_client.clone();
                         let ip_clone = ip.clone();
                         let username_clone = username.clone();
                         let bg_tx_self_clone = bg_tx_self.clone();
                         tokio::spawn(async move {
                             if client.set_light_state(&ip_clone, &username_clone, &light_id, &state).await.is_ok() {
-                                bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                                // Give the bulb's physical transition time to settle before reading it back.
+                                tokio::time::sleep(Duration::from_millis(400)).await;
+                                bg_tx_self_clone.send(BgMessage::CompletedLightPut { light_id, seq }).ok();
                             }
                         });
                     }
@@ -220,14 +234,18 @@ async fn run_bg_worker(
                     for (group_id, action) in groups_to_send {
                         pending_groups.remove(&group_id);
                         last_group_sent.insert(group_id.clone(), now);
-                        
+
+                        let seq = group_request_seq.entry(group_id.clone()).and_modify(|v| *v += 1).or_insert(1);
+                        let seq = *seq;
+
                         let client = hue_client.clone();
                         let ip_clone = ip.clone();
                         let username_clone = username.clone();
                         let bg_tx_self_clone = bg_tx_self.clone();
                         tokio::spawn(async move {
                             if client.set_group_action(&ip_clone, &username_clone, &group_id, &action).await.is_ok() {
-                                bg_tx_self_clone.send(BgMessage::RefreshDevices).ok();
+                                tokio::time::sleep(Duration::from_millis(400)).await;
+                                bg_tx_self_clone.send(BgMessage::CompletedGroupPut { group_id, seq }).ok();
                             }
                         });
                     }
@@ -288,6 +306,7 @@ async fn run_bg_worker(
 
                     BgMessage::RefreshDevices => {
                         if let BridgeConnectionState::Connected { ip, username } = &connection_state {
+                            let requested_at = std::time::Instant::now();
                             let lights = hue_client.fetch_lights(ip, username).await.unwrap_or_default();
                             let groups = hue_client.fetch_groups(ip, username).await.unwrap_or_default();
                             let scenes = hue_client.fetch_scenes(ip, username).await.unwrap_or_default();
@@ -296,8 +315,22 @@ async fn run_bg_worker(
                             groups_cache = groups.clone();
                             scenes_cache = scenes.clone();
 
-                            gui_tx.send(GuiMessage::DevicesRefreshed { lights, groups, scenes }).ok();
+                            gui_tx.send(GuiMessage::DevicesRefreshed { lights, groups, scenes, requested_at }).ok();
                             ctx.request_repaint();
+                        }
+                    }
+
+                    BgMessage::CompletedLightPut { light_id, seq } => {
+                        // A newer edit for this light has been dispatched since this PUT started;
+                        // its own completion will trigger the refresh, so this one is obsolete.
+                        if light_request_seq.get(&light_id) == Some(&seq) {
+                            bg_tx_self.send(BgMessage::RefreshDevices).ok();
+                        }
+                    }
+
+                    BgMessage::CompletedGroupPut { group_id, seq } => {
+                        if group_request_seq.get(&group_id) == Some(&seq) {
+                            bg_tx_self.send(BgMessage::RefreshDevices).ok();
                         }
                     }
 
@@ -577,6 +610,7 @@ async fn run_bg_worker(
                                                 lights: lights_cache.clone(),
                                                 groups: groups_cache.clone(),
                                                 scenes: scenes_cache.clone(),
+                                                requested_at: std::time::Instant::now(),
                                             }).ok();
                                             ctx.request_repaint();
                                         } else if mapping.target_type == "group" {
@@ -609,6 +643,7 @@ async fn run_bg_worker(
                                                 lights: lights_cache.clone(),
                                                 groups: groups_cache.clone(),
                                                 scenes: scenes_cache.clone(),
+                                                requested_at: std::time::Instant::now(),
                                             }).ok();
                                             ctx.request_repaint();
                                         }
