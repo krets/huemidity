@@ -1,5 +1,7 @@
 # HueMIDIty
 
+<img src="resources/icon_512.png" width="128" alt="HueMIDIty logo">
+
 This tool was made entirely for a friend, Giovanni, to have a Mac capable Philips Hue interface.
 
 HueMIDIty is a basic desktop tool to interact with a Philips Hue Bridge. Additionally, it can listen to MIDI devices and map them to light functions like brightness, hue, or component RGB.
